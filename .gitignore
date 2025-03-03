@@ -1,0 +1,47 @@
+# Virtual environment
+venv/
+env/
+.venv/
+ENV/
+.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Environment variables
+.env
+.json
+
+# Local configuration
+*.local
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Logs
+*.log
+
+# Databases
+*.sqlite3
+*.db
+test_chromadb/
+chroma
+chromadb
+
+# Node.js
+node_modules/
+package-lock.json

@@ -1,0 +1,212 @@
+# Email Processing MCP Server
+
+This MCP server provides email processing capabilities with MongoDB integration for semantic search and SQLite for efficient storage and retrieval.
+
+## Features
+
+- Process emails from Outlook with date range filtering
+- Semantic search across processed emails using MongoDB
+- SQLite storage with full-text search capabilities
+- Vector embeddings for efficient similarity search
+- Multi-mailbox support
+- Support for both Inbox and Sent Items folders
+
+## Prerequisites
+
+- Python 3.10 or higher
+- Ollama running locally (for embeddings)
+- Microsoft Outlook installed
+- Windows OS (for Outlook integration)
+- MongoDB server (for storing embeddings)
+
+## Installation
+
+1. Install uv (if not already installed):
+```bash
+pip install uv
+```
+
+2. Create a virtual environment:
+```bash
+uv venv .venv
+```
+
+3. Activate the virtual environment:
+   - Windows: `.venv\Scripts\activate`
+   - macOS/Linux: `source .venv/bin/activate`
+
+4. Install dependencies:
+```bash
+uv pip install -e .
+```
+
+5. Install the fastmcp package:
+```bash
+uv pip install fastmcp
+```
+
+6. Make sure Ollama is running locally with required models:
+```bash
+ollama pull nomic-embed-text
+```
+
+> **Note:** The project uses Hatch as its build system. Make sure your pyproject.toml file includes the following configuration to specify the package location:
+> ```toml
+> [tool.hatch.build.targets.wheel]
+> packages = ["src"]
+> ```
+
+## Configuration
+
+Add the server to your Claude for Desktop configuration file:
+
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "outlook-email": {
+      "command": "C:/Users/username/path/to/mcp-server-outlook-email/.venv/Scripts/python",
+      "args": [
+        "C:/Users/username/path/to/mcp-server-outlook-email/src/mcp_server.py"
+      ],
+      "env": {
+        "MONGODB_URI": "mongodb://localhost:27017/MCP?authSource=admin",
+        "SQLITE_DB_PATH": "C:\\Users\\username\\path\\to\\mcp-server-outlook-email\\data\\emails.db",
+        "EMBEDDING_BASE_URL": "http://localhost:11434",
+        "EMBEDDING_MODEL": "nomic-embed-text",
+        "COLLECTION_NAME": "outlook-emails"
+      }
+    }
+  }
+}
+```
+
+### Tracing and Monitoring
+
+The server has been designed to support external tracing and monitoring solutions. The MCP logging implementation has been intentionally removed in favor of a more robust tracing approach that will be implemented separately.
+
+Note: Do not attempt to re-implement the previous logging system. A new tracing solution will be provided in the future.
+
+Configuration fields explained:
+- `command`: Full path to the Python executable in your virtual environment
+- `args`: Array containing the full path to the MCP server script
+- `env`: Environment variables for configuration
+  - `MONGODB_URI`: MongoDB connection string
+  - `SQLITE_DB_PATH`: Absolute path to SQLite database file
+  - `EMBEDDING_BASE_URL`: Ollama server URL
+  - `EMBEDDING_MODEL`: Model to use for embeddings
+  - `LLM_MODEL`: Model to use for LLM operations
+  - `COLLECTION_NAME`: Name of the MongoDB collection to use (required)
+- `disabled`: Whether the server is disabled (should be false)
+- `alwaysAllow`: Array of tools that don't require user confirmation
+- `autoApprove`: Array of tools that can be auto-approved
+
+Replace the paths with the actual paths on your system. Note that Windows paths in the `env` section should use double backslashes.
+
+## Available Tools
+
+### 1. process_emails
+Process emails from a specified date range:
+```python
+{
+  "start_date": "2024-01-01",    # ISO format date (YYYY-MM-DD)
+  "end_date": "2024-02-15",      # ISO format date (YYYY-MM-DD)
+  "mailboxes": ["All"]           # List of mailbox names or ["All"] for all mailboxes
+}
+```
+
+The tool will:
+1. Connect to specified Outlook mailboxes
+2. Retrieve emails from both Inbox and Sent Items folders
+3. Store emails in SQLite database
+4. Generate embeddings using Ollama
+5. Store embeddings in MongoDB for semantic search
+
+### 2. search_emails
+Search through processed emails using semantic search:
+```python
+{
+  "query": "meeting notes from last week",  # Search query text
+  "num_results": 5,                         # Optional: Number of results to return (default: 5)
+  "metadata_filter": {},                    # Optional: Metadata filters to apply
+  "date_from": "2024-01-01",               # Optional: Start date filter (YYYY-MM-DD)
+  "date_to": "2024-02-15",                 # Optional: End date filter (YYYY-MM-DD)
+  "folder": "Inbox",                        # Optional: Filter by folder
+  "sender": "john@example.com"             # Optional: Filter by sender
+}
+```
+
+The search process:
+1. Performs initial filtering using SQLite full-text search
+2. Generates embedding for the search query
+3. Uses MongoDB to find semantically similar emails
+4. Returns results sorted by similarity score
+
+## Example Usage in Claude
+
+1. Process emails from a date range:
+```
+"Process emails from February 1st to February 17th from all mailboxes"
+```
+
+2. Search processed emails:
+```
+"Search my emails for discussions about important meetings"
+"Find emails from last week about project updates"
+"Search for emails from John about the quarterly report"
+```
+
+## Architecture
+
+The server uses a hybrid search approach:
+1. SQLite database for:
+   - Primary email storage
+   - Full-text search capabilities
+   - Processing status tracking
+   - Efficient filtering
+   - Directory is created automatically if it doesn't exist
+   - Connections are properly closed to prevent database locking
+
+2. MongoDB for:
+   - Vector embeddings storage
+   - Semantic similarity search
+   - Metadata filtering
+   - Efficient retrieval
+   - Connections are properly closed after use
+
+## Error Handling
+
+The server provides detailed error messages for common issues:
+- Invalid date formats
+- Connection issues with Outlook
+- MongoDB errors
+- Embedding generation failures with retry logic
+- SQLite storage errors
+- Ollama server connection issues with automatic retries
+
+## Resource Management
+
+The server implements proper resource management to prevent issues:
+- Database connections (SQLite and MongoDB) are kept open during the server's lifetime to prevent "Cannot operate on a closed database" errors
+- Connections are only closed when the server shuts down, using an atexit handler
+- Destructors and context managers are used as a fallback to ensure connections are closed when objects are garbage collected
+- Connection management is designed to balance resource usage with operational reliability
+- Robust retry logic for external services like Ollama to handle temporary connection issues
+
+## Security Notes
+
+- The server only processes emails from specified mailboxes
+- All data is stored locally (SQLite) and in MongoDB
+- No external API calls except to local Ollama server
+- Requires explicit user approval for email processing
+- No sensitive email data is exposed through the MCP interface
+
+## Debugging
+
+If search results are not appearing:
+1. Verify emails were successfully processed (check process_emails response)
+2. Ensure Ollama server is running for embedding generation
+3. Check that emails were marked as processed in SQLite
+4. Verify MongoDB contains the generated embeddings

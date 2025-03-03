@@ -1,0 +1,127 @@
+# Analysis Tools
+
+## Overview
+
+The analysis tools provide advanced capabilities for email categorization, summarization, and relationship analysis using LLMs and other AI techniques.
+
+## Categorizer
+
+### Implementation (Categorizer.py)
+```python
+class Categorizer:
+    # LLM-based email categorization
+    # Category management
+    # Classification logic
+```
+
+### Features
+- Content analysis
+- Category generation
+- Confidence scoring
+- Category management
+
+## Email Summarization
+
+### Implementation (SummarizeEmails.py)
+```python
+class SummarizeEmails:
+    # Email content summarization
+    # Thread summarization
+    # Key point extraction
+```
+
+### Capabilities
+- Individual email summaries
+- Thread summaries
+- Key information extraction
+- Priority assessment
+
+## Semantic Analysis
+
+### Embedding Generation
+- Ollama embeddings
+- Vector representation
+- Similarity computation
+- Dimension reduction
+
+### Search Capabilities
+- Semantic similarity
+- Content matching
+- Related email finding
+- Pattern detection
+
+## Relationship Analysis
+
+### Graph Analytics
+- Communication patterns
+- Network visualization
+- Centrality analysis
+- Community detection
+
+### Temporal Analysis
+- Time-based patterns
+- Thread tracking
+- Response analysis
+- Activity monitoring
+
+## Integration
+
+### Database Integration
+- MongoDB metadata queries
+- ChromaDB similarity search
+- Neo4j graph traversal
+- Cross-database analysis
+
+### UI Integration
+- Result visualization
+- Interactive analysis
+- Pattern exploration
+- Data filtering
+
+## Best Practices
+
+### Performance
+- Batch processing
+- Caching strategies
+- Resource management
+- Optimization techniques
+
+### Accuracy
+- Model validation
+- Result verification
+- Quality metrics
+- Continuous improvement
+
+### Scalability
+- Distributed processing
+- Resource allocation
+- Load management
+- Performance monitoring
+
+## Configuration
+
+### Model Settings
+- LLM parameters
+- Embedding configuration
+- Analysis thresholds
+- Performance tuning
+
+### Processing Options
+- Batch sizes
+- Thread limits
+- Timeout settings
+- Resource constraints
+
+## Error Handling
+
+### Recovery
+- Model fallbacks
+- Error correction
+- State recovery
+- Result validation
+
+### Monitoring
+- Performance tracking
+- Error logging
+- Quality metrics
+- Resource usage
