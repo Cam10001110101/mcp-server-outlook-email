@@ -67,7 +67,17 @@ See [Logging Documentation](components/logging.md) for details.
 ## Tools
 
 1. `process_emails`: Process emails from a date range
-2. `logging/setLevel`: Configure logging verbosity
+
+## Upcoming Features
+
+- Email search with semantic capabilities
+- Email summarization using LLMs
+- Automatic email categorization
+- Customizable email reports
+- Advanced filtering options
+- Outlook drafting email responses
+- Outlook rule suggestions
+- Expanded database options with Neo4j and ChromaDB integration
 
 ## Security
 

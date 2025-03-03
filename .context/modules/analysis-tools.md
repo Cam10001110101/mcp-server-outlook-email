@@ -4,6 +4,19 @@
 
 The analysis tools provide advanced capabilities for email categorization, summarization, and relationship analysis using LLMs and other AI techniques.
 
+## Upcoming Features
+
+These features are planned for future releases:
+
+- Email search with semantic capabilities
+- Email summarization using LLMs
+- Automatic email categorization
+- Customizable email reports
+- Advanced filtering options
+- Outlook drafting email responses
+- Outlook rule suggestions
+- Expanded database options with Neo4j and ChromaDB integration
+
 ## Categorizer
 
 ### Implementation (Categorizer.py)

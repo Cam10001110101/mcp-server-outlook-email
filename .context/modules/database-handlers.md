@@ -123,6 +123,20 @@ SQLITE_DB_PATH=C:\path\to\emails.db
 PROCESS_DELETED_ITEMS=true|false  # Controls whether to process Deleted Items folder
 ```
 
+## Upcoming Database Integrations
+
+### Neo4j Integration
+- Graph database for relationship analysis
+- Communication pattern visualization
+- Network analysis capabilities
+- Advanced querying for complex relationships
+
+### ChromaDB Integration
+- Specialized vector database
+- Optimized for embedding storage and retrieval
+- Advanced similarity search capabilities
+- Efficient metadata filtering
+
 ## Error Handling
 
 - Connection failures

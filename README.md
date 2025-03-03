@@ -5,11 +5,21 @@ This MCP server provides email processing capabilities with MongoDB integration 
 ## Features
 
 - Process emails from Outlook with date range filtering
-- Semantic search across processed emails using MongoDB
-- SQLite storage with full-text search capabilities
-- Vector embeddings for efficient similarity search
+- Store emails in SQLite database with proper connection management
+- Generate vector embeddings using Ollama
 - Multi-mailbox support
-- Support for both Inbox and Sent Items folders
+- Support for Inbox, Sent Items, and optionally Deleted Items folders
+
+## Upcoming Features
+
+- Email search with semantic capabilities
+- Email summarization using LLMs
+- Automatic email categorization
+- Customizable email reports
+- Advanced filtering options
+- Outlook drafting email responses
+- Outlook rule suggestions
+- Expanded database options with Neo4j and ChromaDB integration
 
 ## Prerequisites
 
@@ -126,38 +136,11 @@ The tool will:
 4. Generate embeddings using Ollama
 5. Store embeddings in MongoDB for semantic search
 
-### 2. search_emails
-Search through processed emails using semantic search:
-```python
-{
-  "query": "meeting notes from last week",  # Search query text
-  "num_results": 5,                         # Optional: Number of results to return (default: 5)
-  "metadata_filter": {},                    # Optional: Metadata filters to apply
-  "date_from": "2024-01-01",               # Optional: Start date filter (YYYY-MM-DD)
-  "date_to": "2024-02-15",                 # Optional: End date filter (YYYY-MM-DD)
-  "folder": "Inbox",                        # Optional: Filter by folder
-  "sender": "john@example.com"             # Optional: Filter by sender
-}
-```
-
-The search process:
-1. Performs initial filtering using SQLite full-text search
-2. Generates embedding for the search query
-3. Uses MongoDB to find semantically similar emails
-4. Returns results sorted by similarity score
 
 ## Example Usage in Claude
 
-1. Process emails from a date range:
 ```
 "Process emails from February 1st to February 17th from all mailboxes"
-```
-
-2. Search processed emails:
-```
-"Search my emails for discussions about important meetings"
-"Find emails from last week about project updates"
-"Search for emails from John about the quarterly report"
 ```
 
 ## Architecture
@@ -207,8 +190,8 @@ The server implements proper resource management to prevent issues:
 
 ## Debugging
 
-If search results are not appearing:
+If you encounter issues:
 1. Verify emails were successfully processed (check process_emails response)
 2. Ensure Ollama server is running for embedding generation
-3. Check that emails were marked as processed in SQLite
-4. Verify MongoDB contains the generated embeddings
+3. Check that the SQLite database is accessible
+4. Verify MongoDB connection is working properly
