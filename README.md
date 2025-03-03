@@ -76,7 +76,8 @@ Add the server to your Claude for Desktop configuration file:
         "SQLITE_DB_PATH": "C:\\Users\\username\\path\\to\\mcp-server-outlook-email\\data\\emails.db",
         "EMBEDDING_BASE_URL": "http://localhost:11434",
         "EMBEDDING_MODEL": "nomic-embed-text",
-        "COLLECTION_NAME": "outlook-emails"
+        "COLLECTION_NAME": "outlook-emails",
+        "PROCESS_DELETED_ITEMS": "false"
       }
     }
   }
@@ -99,6 +100,7 @@ Configuration fields explained:
   - `EMBEDDING_MODEL`: Model to use for embeddings
   - `LLM_MODEL`: Model to use for LLM operations
   - `COLLECTION_NAME`: Name of the MongoDB collection to use (required)
+  - `PROCESS_DELETED_ITEMS`: Whether to process emails from the Deleted Items folder (optional, default: "false")
 - `disabled`: Whether the server is disabled (should be false)
 - `alwaysAllow`: Array of tools that don't require user confirmation
 - `autoApprove`: Array of tools that can be auto-approved
@@ -119,7 +121,7 @@ Process emails from a specified date range:
 
 The tool will:
 1. Connect to specified Outlook mailboxes
-2. Retrieve emails from both Inbox and Sent Items folders
+2. Retrieve emails from Inbox and Sent Items folders (and Deleted Items if enabled)
 3. Store emails in SQLite database
 4. Generate embeddings using Ollama
 5. Store embeddings in MongoDB for semantic search

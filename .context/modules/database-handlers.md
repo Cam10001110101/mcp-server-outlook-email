@@ -7,9 +7,10 @@ The system integrates three specialized databases, each serving a specific purpo
 ## MongoDB Handler
 
 ### Purpose
-- Store structured email metadata
+- Store structured email metadata and vector embeddings
 - Track processing status and job information
 - Maintain email categories and summaries
+- Store emails from Inbox, Sent Items, and optionally Deleted Items
 
 ### Implementation (MongoDBHandler.py)
 ```python
@@ -26,19 +27,21 @@ class MongoDBHandler:
 - Retrieve email information
 - Track job IDs and progress
 
-## ChromaDB Handler
+## SQLite Handler
 
 ### Purpose
-- Store and manage vector embeddings
-- Enable semantic search capabilities
-- Maintain embedding collections
+- Store primary email data
+- Track processing status
+- Enable efficient filtering and retrieval
+- Store emails from all configured folders
 
-### Implementation (ChromaDBHandler.py)
+### Implementation (SQLiteHandler.py)
 ```python
-class ChromaDBHandler:
-    # Manages ChromaDB collections
-    # Handles embedding storage and retrieval
-    # Provides semantic search functionality
+class SQLiteHandler:
+    # Manages SQLite database connection
+    # Handles email storage and retrieval
+    # Tracks processing status
+    # Supports proper connection management
 ```
 
 ### Key Operations
@@ -104,10 +107,20 @@ class Neo4jHandler:
 Each handler requires specific environment variables:
 
 
-### ChromaDB
+### MongoDB
 ```
-CHROMA_DB_PATH=/path/to/chromadb
-CHROMA_COLLECTION_NAME=outlook-email
+MONGODB_URI=mongodb://localhost:27017/MCP
+COLLECTION_NAME=outlook-emails
+```
+
+### SQLite
+```
+SQLITE_DB_PATH=C:\path\to\emails.db
+```
+
+### Email Processing
+```
+PROCESS_DELETED_ITEMS=true|false  # Controls whether to process Deleted Items folder
 ```
 
 ## Error Handling

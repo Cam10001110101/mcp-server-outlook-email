@@ -10,8 +10,9 @@ The email processing pipeline handles the retrieval, analysis, and storage of em
 ```python
 class OutlookConnector:
     # Manages Outlook connection
-    # Retrieves email data
+    # Retrieves email data from Inbox, Sent Items, and optionally Deleted Items
     # Handles authentication
+    # Supports configurable folder processing
 ```
 
 ### EmailProcessingThread
@@ -34,7 +35,9 @@ class EmailMetadata:
 
 ### 1. Email Retrieval
 - Connect to Outlook
-- Fetch email content
+- Fetch email content from configured folders
+- Process Inbox and Sent Items by default
+- Optionally process Deleted Items when enabled
 - Extract attachments
 - Clean HTML content
 
@@ -79,10 +82,12 @@ class EmailMetadata:
 
 ### Environment Variables
 ```
-EMBEDDING_BASE_URL=
-EMBEDDING_API=
-EMBEDDING_MODEL=
-JSON_OUTPUT_PATH=
+MONGODB_URI=mongodb://localhost:27017/MCP
+SQLITE_DB_PATH=C:\path\to\emails.db
+EMBEDDING_BASE_URL=http://localhost:11434
+EMBEDDING_MODEL=nomic-embed-text
+COLLECTION_NAME=outlook-emails
+PROCESS_DELETED_ITEMS=true|false
 ```
 
 ### Processing Options

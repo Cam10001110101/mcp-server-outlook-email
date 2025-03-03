@@ -12,7 +12,7 @@ The server processes emails from Outlook, stores them in SQLite, and generates v
    - Outlook integration for email retrieval
    - Date range filtering
    - Multi-mailbox support
-   - Support for both Inbox and Sent Items folders
+   - Support for Inbox, Sent Items, and optionally Deleted Items folders
 
 2. **Storage**
    - SQLite for primary email storage
@@ -47,10 +47,12 @@ The server uses a layered architecture:
 ## Configuration
 
 The server requires several environment variables:
-- `CHROMA_DB_PATH`: Path to ChromaDB storage
+- `MONGODB_URI`: MongoDB connection string
 - `SQLITE_DB_PATH`: Path to SQLite database
 - `EMBEDDING_BASE_URL`: Ollama server URL
 - `EMBEDDING_MODEL`: Model for embeddings
+- `COLLECTION_NAME`: Name of the MongoDB collection
+- `PROCESS_DELETED_ITEMS`: Whether to process emails from Deleted Items folder (optional, default: "false")
 
 ## Logging
 

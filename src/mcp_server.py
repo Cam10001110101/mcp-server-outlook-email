@@ -46,6 +46,10 @@ def validate_config(config: Dict[str, str]) -> None:
     missing_vars = [var for var in required_vars if not config.get(var)]
     if missing_vars:
         raise ValueError(f"Missing required configuration: {', '.join(missing_vars)}")
+    
+    # Set default values for optional configuration
+    if "PROCESS_DELETED_ITEMS" not in config:
+        config["PROCESS_DELETED_ITEMS"] = "false"
 
 class EmailProcessor:
     def __init__(self, config: Dict[str, str]):
@@ -73,8 +77,9 @@ class EmailProcessor:
         # Initialize SQLite handler
         self.sqlite = SQLiteHandler(config["SQLITE_DB_PATH"])
         
-        # Initialize Outlook connector
-        self.outlook = OutlookConnector()
+        # Initialize Outlook connector with deleted items setting
+        process_deleted = config.get("PROCESS_DELETED_ITEMS", "false").lower() == "true"
+        self.outlook = OutlookConnector(process_deleted_items=process_deleted)
 
     async def process_emails(
         self,
@@ -111,8 +116,12 @@ class EmailProcessor:
                     "error": "No valid mailboxes found"
                 }
 
+            # Include Deleted Items folder if enabled
             folder_names = ["Inbox", "Sent Items"]
-            await ctx.report_progress(10, "Retrieving emails")
+            if self.outlook.process_deleted_items:
+                folder_names.append("Deleted Items")
+                
+            await ctx.report_progress(10, f"Retrieving emails from {', '.join(folder_names)}")
             
             all_emails = []
             for i, mailbox in enumerate(outlook_mailboxes):
@@ -197,7 +206,8 @@ try:
         "SQLITE_DB_PATH": os.environ.get("SQLITE_DB_PATH"),
         "EMBEDDING_BASE_URL": os.environ.get("EMBEDDING_BASE_URL"),
         "EMBEDDING_MODEL": os.environ.get("EMBEDDING_MODEL"),
-        "COLLECTION_NAME": os.environ.get("COLLECTION_NAME")
+        "COLLECTION_NAME": os.environ.get("COLLECTION_NAME"),
+        "PROCESS_DELETED_ITEMS": os.environ.get("PROCESS_DELETED_ITEMS", "false")
     }
 
     # Log environment variables for debugging
@@ -215,6 +225,7 @@ try:
     logging.info(f"EMBEDDING_BASE_URL: {os.environ.get('EMBEDDING_BASE_URL')}")
     logging.info(f"EMBEDDING_MODEL: {os.environ.get('EMBEDDING_MODEL')}")
     logging.info(f"COLLECTION_NAME: {os.environ.get('COLLECTION_NAME')}")
+    logging.info(f"PROCESS_DELETED_ITEMS: {os.environ.get('PROCESS_DELETED_ITEMS', 'false')}")
     
     # Validate configuration
     validate_config(config)

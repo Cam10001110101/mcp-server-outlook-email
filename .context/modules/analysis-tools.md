@@ -39,10 +39,10 @@ class SummarizeEmails:
 ## Semantic Analysis
 
 ### Embedding Generation
-- Ollama embeddings
-- Vector representation
+- Ollama embeddings via langchain_ollama
+- Vector representation stored in MongoDB
 - Similarity computation
-- Dimension reduction
+- Support for processing emails from all configured folders
 
 ### Search Capabilities
 - Semantic similarity
@@ -67,10 +67,10 @@ class SummarizeEmails:
 ## Integration
 
 ### Database Integration
-- MongoDB metadata queries
-- ChromaDB similarity search
-- Neo4j graph traversal
-- Cross-database analysis
+- MongoDB for metadata and embeddings
+- SQLite for primary email storage
+- Proper connection management
+- Support for all email folders including Deleted Items when enabled
 
 ### UI Integration
 - Result visualization

@@ -5,7 +5,14 @@ import pywintypes
 import re
 from EmailMetadata import EmailMetadata
 class OutlookConnector:
-    def __init__(self):
+    def __init__(self, process_deleted_items=False):
+        """
+        Initialize the Outlook connector.
+        
+        Args:
+            process_deleted_items (bool): Whether to process emails from the Deleted Items folder
+        """
+        self.process_deleted_items = process_deleted_items
         try:
             self.app = win32com.client.Dispatch("Outlook.Application")
             self.outlook = self.app.GetNamespace("MAPI")
@@ -66,6 +73,13 @@ class OutlookConnector:
         processed_count = 0
         error_count = 0
         skipped_folders = []
+        
+        # Define folder IDs
+        folder_ids = {
+            "Inbox": 6,        # olFolderInbox
+            "Sent Items": 5,   # olFolderSentMail
+            "Deleted Items": 3 # olFolderDeletedItems
+        }
 
         # Convert dates for filtering
         start_datetime = datetime.fromisoformat(start_date)
@@ -80,133 +94,79 @@ class OutlookConnector:
             try:
                 store = account.DeliveryStore
                 
-                inbox = store.GetDefaultFolder(6)  # 6 is olFolderInbox
-                if inbox and inbox.Items.Count > 0:
-                    items = inbox.Items
+                # Process each requested folder
+                for folder_name in folder_names:
+                    # Skip Deleted Items folder if not enabled
+                    if folder_name == "Deleted Items" and not self.process_deleted_items:
+                        continue
+                        
+                    folder_id = folder_ids.get(folder_name)
+                    if not folder_id:
+                        continue
+                        
+                    folder = store.GetDefaultFolder(folder_id)
+                    if folder and folder.Items.Count > 0:
+                        items = folder.Items
                     
-                    for i in range(1, items.Count + 1):
-                        try:
-                            email = items.Item(i)
-                            if hasattr(email, 'ReceivedTime'):
-                                # Check if email is within date range
-                                email_time = self.to_utc(email.ReceivedTime)
-                                if not (start_utc <= email_time <= end_utc):
-                                    continue
-                                
-                                # Convert dates to UTC datetime objects
-                                received_datetime = self.to_utc(email.ReceivedTime)
-                                sent_datetime = self.to_utc(email.SentOn) if hasattr(email, 'SentOn') and email.SentOn else None
-                                
-                                # Get recipients
-                                to = getattr(email, 'To', '')
-                                if not isinstance(to, str):
-                                    to = '; '.join(recipient.Name for recipient in email.Recipients if hasattr(recipient, 'Name'))
-                                
-                                # Get sender email
-                                sender_email = getattr(email, 'SenderEmailAddress', '')
-                                if '/O=EXCHANGELABS/' in sender_email.upper():
-                                    # Try to get from Recipients
-                                    if hasattr(email, 'Recipients'):
-                                        for i in range(1, email.Recipients.Count + 1):
-                                            recipient = email.Recipients.Item(i)
-                                            if hasattr(recipient, 'Type') and recipient.Type == 1:  # 1 = To
-                                                sender_email = getattr(recipient, 'Address', sender_email)
-                                                break
-                                
-                                # Get attachments
-                                attachments = [attachment.FileName for attachment in email.Attachments] if hasattr(email, 'Attachments') and email.Attachments.Count > 0 else []
-                                
-                                # Clean body
-                                body = self.clean_email_body(getattr(email, 'Body', ''))
-                                
-                                try:
-                                    email_metadata = EmailMetadata(
-                                        AccountName=account.DisplayName,
-                                        Entry_ID=email.EntryID,
-                                        Folder="Inbox",
-                                        Subject=email.Subject,
-                                        SenderName=getattr(email, 'SenderName', ''),
-                                        SenderEmailAddress=sender_email,
-                                        ReceivedTime=received_datetime,
-                                        SentOn=sent_datetime,
-                                        To=to,
-                                        Body=body,
-                                        Attachments=attachments,
-                                        IsMarkedAsTask=getattr(email, 'IsMarkedAsTask', False),
-                                        UnRead=getattr(email, 'UnRead', False),
-                                        Categories='; '.join(email.Categories) if hasattr(email, 'Categories') else ''
-                                    )
-                                except Exception:
-                                    raise
-                                email_data.append(email_metadata)
-                                processed_count += 1
-                        except Exception:
-                            error_count += 1
-                            continue
-                
-                sent = store.GetDefaultFolder(5)  # 5 is olFolderSentMail
-                if sent and sent.Items.Count > 0:
-                    items = sent.Items
-                    
-                    for i in range(1, items.Count + 1):
-                        try:
-                            email = items.Item(i)
-                            if hasattr(email, 'ReceivedTime'):
-                                # Check if email is within date range
-                                email_time = self.to_utc(email.ReceivedTime)
-                                if not (start_utc <= email_time <= end_utc):
-                                    continue
-                                
-                                # Convert dates to UTC datetime objects
-                                received_datetime = self.to_utc(email.ReceivedTime)
-                                sent_datetime = self.to_utc(email.SentOn) if hasattr(email, 'SentOn') and email.SentOn else None
-                                
-                                # Get recipients
-                                to = getattr(email, 'To', '')
-                                if not isinstance(to, str):
-                                    to = '; '.join(recipient.Name for recipient in email.Recipients if hasattr(recipient, 'Name'))
-                                
-                                # Get sender email
-                                sender_email = getattr(email, 'SenderEmailAddress', '')
-                                if '/O=EXCHANGELABS/' in sender_email.upper():
-                                    # Try to get from Recipients
-                                    if hasattr(email, 'Recipients'):
-                                        for i in range(1, email.Recipients.Count + 1):
-                                            recipient = email.Recipients.Item(i)
-                                            if hasattr(recipient, 'Type') and recipient.Type == 1:  # 1 = To
-                                                sender_email = getattr(recipient, 'Address', sender_email)
-                                                break
-                                
-                                # Get attachments
-                                attachments = [attachment.FileName for attachment in email.Attachments] if hasattr(email, 'Attachments') and email.Attachments.Count > 0 else []
-                                
-                                # Clean body
-                                body = self.clean_email_body(getattr(email, 'Body', ''))
-                                
-                                try:
-                                    email_metadata = EmailMetadata(
-                                        AccountName=account.DisplayName,
-                                        Entry_ID=email.EntryID,
-                                        Folder="Sent Items",
-                                        Subject=email.Subject,
-                                        SenderName=getattr(email, 'SenderName', ''),
-                                        SenderEmailAddress=sender_email,
-                                        ReceivedTime=received_datetime,
-                                        SentOn=sent_datetime,
-                                        To=to,
-                                        Body=body,
-                                        Attachments=attachments,
-                                        IsMarkedAsTask=getattr(email, 'IsMarkedAsTask', False),
-                                        UnRead=getattr(email, 'UnRead', False),
-                                        Categories='; '.join(email.Categories) if hasattr(email, 'Categories') else ''
-                                    )
-                                except Exception:
-                                    raise
-                                email_data.append(email_metadata)
-                                processed_count += 1
-                        except Exception:
-                            error_count += 1
-                            continue
+                        for i in range(1, items.Count + 1):
+                            try:
+                                email = items.Item(i)
+                                if hasattr(email, 'ReceivedTime'):
+                                    # Check if email is within date range
+                                    email_time = self.to_utc(email.ReceivedTime)
+                                    if not (start_utc <= email_time <= end_utc):
+                                        continue
+                                    
+                                    # Convert dates to UTC datetime objects
+                                    received_datetime = self.to_utc(email.ReceivedTime)
+                                    sent_datetime = self.to_utc(email.SentOn) if hasattr(email, 'SentOn') and email.SentOn else None
+                                    
+                                    # Get recipients
+                                    to = getattr(email, 'To', '')
+                                    if not isinstance(to, str):
+                                        to = '; '.join(recipient.Name for recipient in email.Recipients if hasattr(recipient, 'Name'))
+                                    
+                                    # Get sender email
+                                    sender_email = getattr(email, 'SenderEmailAddress', '')
+                                    if '/O=EXCHANGELABS/' in sender_email.upper():
+                                        # Try to get from Recipients
+                                        if hasattr(email, 'Recipients'):
+                                            for i in range(1, email.Recipients.Count + 1):
+                                                recipient = email.Recipients.Item(i)
+                                                if hasattr(recipient, 'Type') and recipient.Type == 1:  # 1 = To
+                                                    sender_email = getattr(recipient, 'Address', sender_email)
+                                                    break
+                                    
+                                    # Get attachments
+                                    attachments = [attachment.FileName for attachment in email.Attachments] if hasattr(email, 'Attachments') and email.Attachments.Count > 0 else []
+                                    
+                                    # Clean body
+                                    body = self.clean_email_body(getattr(email, 'Body', ''))
+                                    
+                                    try:
+                                        email_metadata = EmailMetadata(
+                                            AccountName=account.DisplayName,
+                                            Entry_ID=email.EntryID,
+                                            Folder=folder_name,
+                                            Subject=email.Subject,
+                                            SenderName=getattr(email, 'SenderName', ''),
+                                            SenderEmailAddress=sender_email,
+                                            ReceivedTime=received_datetime,
+                                            SentOn=sent_datetime,
+                                            To=to,
+                                            Body=body,
+                                            Attachments=attachments,
+                                            IsMarkedAsTask=getattr(email, 'IsMarkedAsTask', False),
+                                            UnRead=getattr(email, 'UnRead', False),
+                                            Categories='; '.join(email.Categories) if hasattr(email, 'Categories') else ''
+                                        )
+                                    except Exception:
+                                        raise
+                                    email_data.append(email_metadata)
+                                    processed_count += 1
+                            except Exception:
+                                error_count += 1
+                                continue
                 
             except Exception:
                 continue
