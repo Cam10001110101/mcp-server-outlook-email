@@ -32,18 +32,29 @@ This MCP server provides email processing capabilities with MongoDB integration 
 ## Installation
 
 1. Install uv (if not already installed):
-```bash
-pip install uv
-```
+  ```bash
+  pip install uv
+  ```
 
 2. Create a virtual environment:
-```bash
-uv venv .venv
-```
+  ```bash
+  uv venv .venv
+  ```
 
-3. Activate the virtual environment:
-   - Windows: `.venv\Scripts\activate`
-   - macOS/Linux: `source .venv/bin/activate`
+3. Activate the virtual environment:  
+   
+   Windows: 
+
+    ```
+    .venv\Scripts\activate
+    ```
+
+   
+    macOS/Linux: 
+
+    ```python
+    source .venv/bin/activate
+    ```
 
 4. Install dependencies:
 ```bash
@@ -60,11 +71,6 @@ uv pip install fastmcp
 ollama pull nomic-embed-text
 ```
 
-> **Note:** The project uses Hatch as its build system. Make sure your pyproject.toml file includes the following configuration to specify the package location:
-> ```toml
-> [tool.hatch.build.targets.wheel]
-> packages = ["src"]
-> ```
 
 ## Configuration
 
