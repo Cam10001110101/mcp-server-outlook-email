@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/cam10001110101-mcp-server-outlook-email-badge.png)](https://mseep.ai/app/cam10001110101-mcp-server-outlook-email)
+
 # Email Processing MCP Server
 
 This MCP server provides email processing capabilities with MongoDB integration for semantic search and SQLite for efficient storage and retrieval.
