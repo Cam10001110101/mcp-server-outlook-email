@@ -15,6 +15,9 @@ logging.basicConfig(
     stream=sys.stderr
 )
 
+# Create logger for this module
+logger = logging.getLogger('outlook-email.mcp_server')
+
 # Environment variables are set by the MCP config file
 
 from datetime import datetime
@@ -213,6 +216,19 @@ class DraftEmailResult(BaseModel):
     suggestions: List[str] = Field(description="Alternative phrasings or improvements")
     error: Optional[str] = Field(default=None, description="Error message if generation failed")
 
+class ConsistencyReportResult(BaseModel):
+    """Structured result for consistency check tool"""
+    success: bool = Field(description="Whether the check was successful")
+    sqlite_total: int = Field(description="Total emails in SQLite")
+    sqlite_processed: int = Field(description="Emails marked as processed in SQLite")
+    mongodb_total: int = Field(description="Total embeddings in MongoDB")
+    missing_embeddings: List[str] = Field(description="Email IDs processed but missing embeddings")
+    orphaned_embeddings: List[str] = Field(description="Embedding IDs not in SQLite")
+    consistent: bool = Field(description="Whether data is consistent")
+    processing_rate: float = Field(description="Percentage of emails processed")
+    recommendations: List[str] = Field(description="Recommended actions")
+    error: Optional[str] = Field(default=None, description="Error message if check failed")
+
 def validate_config(config: Dict[str, str]) -> None:
     """Validate required configuration values."""
     required_vars = [
@@ -229,6 +245,93 @@ def validate_config(config: Dict[str, str]) -> None:
     # Set default values for optional configuration
     if "PROCESS_DELETED_ITEMS" not in config:
         config["PROCESS_DELETED_ITEMS"] = "false"
+
+def validate_ollama_connection(base_url: str, model: str, max_retries: int = 3) -> bool:
+    """
+    Validate Ollama server is running and model is available.
+
+    Args:
+        base_url: Ollama server URL
+        model: Embedding model name
+        max_retries: Number of connection attempts
+
+    Returns:
+        bool: True if Ollama is accessible and model exists
+    """
+    import requests
+    import time
+
+    for attempt in range(max_retries):
+        try:
+            # Check if Ollama server is running
+            response = requests.get(f"{base_url}/api/tags", timeout=5)
+            if response.status_code == 200:
+                # Check if model is available
+                models = response.json().get('models', [])
+                model_names = [m.get('name', '').split(':')[0] for m in models]
+
+                if model in model_names:
+                    logger.info(f"Ollama validation successful: {model} model found")
+                    return True
+                else:
+                    logger.warning(f"Model {model} not found. Available models: {model_names}")
+                    logger.warning(f"Run: ollama pull {model}")
+                    return False
+            else:
+                logger.warning(f"Ollama server returned status {response.status_code}")
+
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"Cannot connect to Ollama at {base_url} (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+                continue
+        except Exception as e:
+            logger.error(f"Error validating Ollama: {str(e)}")
+
+        if attempt == max_retries - 1:
+            logger.error(f"Failed to connect to Ollama after {max_retries} attempts")
+            return False
+
+    return False
+
+def validate_mongodb_vector_index(mongodb_uri: str, collection_name: str) -> bool:
+    """
+    Validate MongoDB has embeddings for vector search.
+
+    For local MongoDB with Python-based similarity search, we check if
+    the collection has documents with embeddings rather than checking
+    for Atlas search indexes (which don't exist in local MongoDB).
+
+    Args:
+        mongodb_uri: MongoDB connection string
+        collection_name: Collection name to check
+
+    Returns:
+        bool: True if embeddings exist in collection
+    """
+    try:
+        from pymongo import MongoClient
+
+        client = MongoClient(mongodb_uri)
+        db_name = mongodb_uri.split('/')[-1].split('?')[0]
+        collection = client[db_name][collection_name]
+
+        # Count documents with embeddings
+        embedding_count = collection.count_documents({'embedding': {'$exists': True}})
+
+        if embedding_count > 0:
+            logger.info(f"Found {embedding_count} documents with embeddings - vector search ready")
+            logger.info("Using Python-based cosine similarity (local MongoDB compatible)")
+        else:
+            logger.warning("No documents with embeddings found yet")
+            logger.warning("Vector search will be available after processing emails")
+
+        client.close()
+        return embedding_count > 0
+
+    except Exception as e:
+        logger.error(f"Error checking MongoDB embeddings: {str(e)}")
+        return False
 
 class EmailProcessor:
     def __init__(self, config: Dict[str, str]):
@@ -255,7 +358,21 @@ class EmailProcessor:
         
         # Initialize SQLite handler
         self.sqlite = SQLiteHandler(config["SQLITE_DB_PATH"])
-        
+
+        # Initialize vector search handler
+        from VectorSearchHandler import VectorSearchHandler
+        try:
+            self.vector_search = VectorSearchHandler(
+                connection_string=config["MONGODB_URI"],
+                collection_name=self.collection_name,
+                embedding_model=config["EMBEDDING_MODEL"],
+                embedding_base_url=config["EMBEDDING_BASE_URL"]
+            )
+            logger.info("Vector search handler initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize vector search: {str(e)}")
+            self.vector_search = None
+
         # Initialize Outlook connector with deleted items setting
         process_deleted = config.get("PROCESS_DELETED_ITEMS", "false").lower() == "true"
         self.outlook = OutlookConnector(process_deleted_items=process_deleted)
@@ -265,7 +382,9 @@ class EmailProcessor:
         start_date: str,
         end_date: str,
         mailboxes: List[str],
-        ctx: Context
+        batch_size: int = 100,
+        max_to_process: Optional[int] = None,
+        ctx: Context = None
     ) -> ProcessEmailsResult:
         """Process emails from the specified date range and mailboxes."""
         try:
@@ -356,11 +475,16 @@ class EmailProcessor:
                     error="Failed to store any emails in SQLite"
                 )
             
-            unprocessed = self.sqlite.get_unprocessed_emails()
+            # Get unprocessed emails with limit
+            await ctx.report_progress(70, "Fetching unprocessed emails")
+
+            # Apply limit if specified
+            limit = max_to_process if max_to_process else 10000  # Default max
+            unprocessed = self.sqlite.get_unprocessed_emails(limit=limit)
             email_dicts = [email for email in unprocessed]
-            
-            await ctx.report_progress(70, "Processing embeddings")
-            
+
+            await ctx.report_progress(75, f"Found {len(email_dicts)} unprocessed emails")
+
             if not email_dicts:
                 return ProcessEmailsResult(
                     success=True,
@@ -370,12 +494,33 @@ class EmailProcessor:
                     failed_count=0,
                     message="No new emails to process"
                 )
-            
-            total_processed, total_failed = self.embedding_processor.process_batch(email_dicts)
+
+            # Process in batches
+            total_processed = 0
+            total_failed = 0
+
+            for i in range(0, len(email_dicts), batch_size):
+                batch = email_dicts[i:i+batch_size]
+                progress = 75 + (15 * (i + len(batch)) / len(email_dicts))
+                await ctx.report_progress(
+                    progress,
+                    f"Processing batch {i//batch_size + 1} ({len(batch)} emails)"
+                )
+
+                # Process batch
+                processed, failed = self.embedding_processor.process_batch(batch)
+                total_processed += processed
+                total_failed += failed
+
+                # Mark processed emails
+                for email in batch[:processed]:
+                    self.sqlite.mark_as_processed(email['id'])
+
+                # Stop if we've hit the max_to_process limit
+                if max_to_process and total_processed >= max_to_process:
+                    break
+
             await ctx.report_progress(90, "Finalizing processing")
-            
-            for email in email_dicts[:total_processed]:
-                self.sqlite.mark_as_processed(email['id'])
             
             result = ProcessEmailsResult(
                 success=True,
@@ -434,9 +579,35 @@ try:
     
     # Validate configuration
     validate_config(config)
-    
-    
+
+    # Validate Ollama connection
+    logging.info("Validating Ollama connection...")
+    ollama_ok = validate_ollama_connection(
+        base_url=config["EMBEDDING_BASE_URL"],
+        model=config["EMBEDDING_MODEL"]
+    )
+    if not ollama_ok:
+        logging.error("WARNING: Ollama validation failed. Embedding generation will not work.")
+        logging.error(f"Ensure Ollama is running at {config['EMBEDDING_BASE_URL']}")
+        logging.error(f"And model '{config['EMBEDDING_MODEL']}' is installed: ollama pull {config['EMBEDDING_MODEL']}")
+
+    # Validate MongoDB vector index
+    logging.info("Checking MongoDB vector index...")
+    vector_index_ok = validate_mongodb_vector_index(
+        mongodb_uri=config["MONGODB_URI"],
+        collection_name=config["COLLECTION_NAME"]
+    )
+    if not vector_index_ok:
+        logging.error("WARNING: MongoDB vector index not found. Vector search will not work.")
+
+    # Initialize processor
     processor = EmailProcessor(config)
+
+    # Log startup status
+    if ollama_ok and vector_index_ok:
+        logging.info("✓ All systems operational")
+    else:
+        logging.warning("⚠ Server started with warnings - some features may not work")
     
 except Exception as e:
     raise
@@ -457,6 +628,11 @@ def cleanup_resources():
             if hasattr(processor, 'embedding_processor') and hasattr(processor.embedding_processor, 'mongodb_handler'):
                 processor.embedding_processor.mongodb_handler.close()
                 logging.info("MongoDB connection closed during shutdown")
+
+            # Close vector search handler
+            if hasattr(processor, 'vector_search') and processor.vector_search:
+                processor.vector_search.close()
+                logging.info("Vector search connection closed during shutdown")
     except Exception as e:
         logging.error(f"Error during cleanup: {str(e)}")
 
@@ -467,14 +643,18 @@ async def process_emails(
     start_date: str,
     end_date: str,
     mailboxes: List[str],
+    batch_size: int = 100,
+    max_to_process: Optional[int] = None,
     ctx: Context = None
 ) -> ProcessEmailsResult:
     """Process emails from specified date range and mailboxes.
-    
+
     Args:
         start_date: Start date in ISO format (YYYY-MM-DD)
         end_date: End date in ISO format (YYYY-MM-DD)
         mailboxes: List of mailbox names or ["All"] for all mailboxes
+        batch_size: Number of emails to process in each batch (default: 100)
+        max_to_process: Maximum number of unprocessed emails to process (None = all)
     """
     try:
         # Validate date formats
@@ -491,8 +671,8 @@ async def process_emails(
                 message="Error: Dates must be in ISO format (YYYY-MM-DD)",
                 error="Invalid date format"
             )
-            
-        result = await processor.process_emails(start_date, end_date, mailboxes, ctx)
+
+        result = await processor.process_emails(start_date, end_date, mailboxes, batch_size, max_to_process, ctx)
         return result
     except Exception as e:
         return ProcessEmailsResult(
@@ -513,21 +693,23 @@ async def search_emails(
     sender: Optional[str] = None,
     folder: Optional[str] = None,
     limit: int = 20,
+    use_semantic: bool = True,
     ctx: Context = None
 ) -> SearchEmailsResult:
-    """Search emails using semantic search and filters.
-    
+    """Search emails using semantic vector search or keyword search.
+
     Args:
-        query: Search query (supports natural language)
+        query: Search query (natural language for semantic, keywords for SQL)
         date_from: Start date filter in ISO format (YYYY-MM-DD)
         date_to: End date filter in ISO format (YYYY-MM-DD)
         sender: Filter by sender email address
         folder: Filter by Outlook folder name
         limit: Maximum number of results to return
+        use_semantic: Use vector similarity search (True) or SQL keyword search (False)
     """
     import time
     start_time = time.time()
-    
+
     try:
         # Validate date formats if provided
         if date_from:
@@ -542,7 +724,7 @@ async def search_emails(
                     query_used=query,
                     error="Invalid date_from format. Use YYYY-MM-DD"
                 )
-        
+
         if date_to:
             try:
                 datetime.fromisoformat(date_to)
@@ -555,35 +737,87 @@ async def search_emails(
                     query_used=query,
                     error="Invalid date_to format. Use YYYY-MM-DD"
                 )
-        
-        # Build search filters
-        filters = {}
-        if date_from:
-            filters['date_from'] = date_from
-        if date_to:
-            filters['date_to'] = date_to
-        if sender:
-            filters['sender'] = sender
-        if folder:
-            filters['folder'] = folder
-            
-        # Perform semantic search using embedding processor
-        try:
+
+        # Choose search method
+        if use_semantic and processor.vector_search:
+            try:
+                # Perform vector search with metadata filters
+                results_with_scores = processor.vector_search.similarity_search_with_filters(
+                    query=query,
+                    k=limit,
+                    date_from=date_from,
+                    date_to=date_to,
+                    sender=sender,
+                    folder=folder
+                )
+
+                # Convert LangChain documents to EmailItem objects
+                emails = []
+                for doc, score in results_with_scores:
+                    # Extract metadata from LangChain document
+                    metadata = doc.metadata
+
+                    # Get email ID to fetch full details from SQLite
+                    email_id = metadata.get('id', '')
+                    email_data = processor.sqlite.get_email_by_id(email_id)
+
+                    if email_data:
+                        email = EmailItem(
+                            id=email_data.get('id', ''),
+                            subject=email_data.get('subject', ''),
+                            sender=email_data.get('sender_email', ''),
+                            recipients=email_data.get('recipients', '').split(';') if email_data.get('recipients') else [],
+                            sent_date=email_data.get('sent_time', ''),
+                            body_preview=email_data.get('body', '')[:200] if email_data.get('body') else '',
+                            folder=email_data.get('folder', ''),
+                            importance=email_data.get('importance', 'normal'),
+                            has_attachments=bool(email_data.get('has_attachments', False)),
+                            thread_id=email_data.get('thread_id')
+                        )
+                        emails.append(email)
+
+                search_time = (time.time() - start_time) * 1000
+
+                return SearchEmailsResult(
+                    success=True,
+                    total_results=len(emails),
+                    emails=emails,
+                    search_time_ms=search_time,
+                    query_used=f"Vector search: {query}"
+                )
+
+            except Exception as e:
+                logger.error(f"Vector search failed: {str(e)}, falling back to SQL search")
+                # Fall back to SQL search
+                use_semantic = False
+
+        if not use_semantic:
+            # Use SQL keyword search (fallback)
+            filters = {}
+            if date_from:
+                filters['date_from'] = date_from
+            if date_to:
+                filters['date_to'] = date_to
+            if sender:
+                filters['sender'] = sender
+            if folder:
+                filters['folder'] = folder
+
             search_results = processor.sqlite.search_emails(
-                query=query,
+                query_text=query,
                 filters=filters,
                 limit=limit
             )
-            
+
             # Convert results to EmailItem objects
             emails = []
             for result in search_results:
                 email = EmailItem(
                     id=result.get('id', ''),
                     subject=result.get('subject', ''),
-                    sender=result.get('sender', ''),
+                    sender=result.get('sender_email', ''),
                     recipients=result.get('recipients', '').split(';') if result.get('recipients') else [],
-                    sent_date=result.get('sent_date', ''),
+                    sent_date=result.get('sent_time', ''),
                     body_preview=result.get('body', '')[:200] if result.get('body') else '',
                     folder=result.get('folder', ''),
                     importance=result.get('importance', 'normal'),
@@ -591,27 +825,17 @@ async def search_emails(
                     thread_id=result.get('thread_id')
                 )
                 emails.append(email)
-            
+
             search_time = (time.time() - start_time) * 1000
-            
+
             return SearchEmailsResult(
                 success=True,
                 total_results=len(emails),
                 emails=emails,
                 search_time_ms=search_time,
-                query_used=query
+                query_used=f"SQL keyword search: {query}"
             )
-            
-        except Exception as e:
-            return SearchEmailsResult(
-                success=False,
-                total_results=0,
-                emails=[],
-                search_time_ms=(time.time() - start_time) * 1000,
-                query_used=query,
-                error=f"Search error: {str(e)}"
-            )
-            
+
     except Exception as e:
         return SearchEmailsResult(
             success=False,
@@ -1373,6 +1597,67 @@ async def organize_emails_by_rules(
             operation="organize_emails",
             folders_affected=[],
             items_moved=0,
+            error=str(e)
+        )
+
+@mcp.tool(title="Check Data Consistency")
+async def check_data_consistency(ctx: Context = None) -> ConsistencyReportResult:
+    """
+    Check consistency between SQLite and MongoDB data.
+
+    Verifies that:
+    - Emails marked as processed have embeddings in MongoDB
+    - Embeddings in MongoDB correspond to emails in SQLite
+    - Provides recommendations for reconciliation
+
+    Returns:
+        ConsistencyReportResult with detailed consistency metrics and recommendations
+    """
+    try:
+        # Get SQLite consistency report
+        sqlite_report = processor.sqlite.get_consistency_report()
+
+        # Verify embeddings consistency
+        consistency = processor.sqlite.verify_processed_emails_have_embeddings(
+            processor.embedding_processor.mongodb_handler
+        )
+
+        # Generate recommendations
+        recommendations = []
+        if consistency['missing_embeddings']:
+            recommendations.append(
+                f"Re-process {len(consistency['missing_embeddings'])} emails to generate missing embeddings"
+            )
+        if consistency['orphaned_embeddings']:
+            recommendations.append(
+                f"Clean up {len(consistency['orphaned_embeddings'])} orphaned embeddings in MongoDB"
+            )
+        if consistency['consistent']:
+            recommendations.append("Data is consistent - no action needed")
+
+        return ConsistencyReportResult(
+            success=True,
+            sqlite_total=sqlite_report['total_emails'],
+            sqlite_processed=sqlite_report['processed_emails'],
+            mongodb_total=consistency['embedding_count'],
+            missing_embeddings=consistency['missing_embeddings'][:10],  # Limit to 10
+            orphaned_embeddings=consistency['orphaned_embeddings'][:10],
+            consistent=consistency['consistent'],
+            processing_rate=sqlite_report['processing_rate'],
+            recommendations=recommendations
+        )
+
+    except Exception as e:
+        return ConsistencyReportResult(
+            success=False,
+            sqlite_total=0,
+            sqlite_processed=0,
+            mongodb_total=0,
+            missing_embeddings=[],
+            orphaned_embeddings=[],
+            consistent=False,
+            processing_rate=0.0,
+            recommendations=[],
             error=str(e)
         )
 
