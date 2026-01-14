@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(pip show:*)",
+      "Bash(.venv/Scripts/pip show:*)",
+      "Bash(python:*)",
+      "Bash(rm:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "WebFetch(domain:modelcontextprotocol.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)"
+    ],
+    "deny": []
+  },
+  "enabledMcpjsonServers": [
+    "ollama"
+  ],
+  "enableAllProjectMcpServers": true
+}
