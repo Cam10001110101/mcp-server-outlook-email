@@ -2,7 +2,7 @@
 
 # Email Processing MCP Server
 
-This MCP server provides email processing capabilities with MongoDB integration for semantic search and SQLite for efficient storage and retrieval.
+This MCP server provides email processing capabilities with MongoDB integration for semantic search and SQLite for efficient storage and retrieval. The server has been upgraded to comply with the **Model Context Protocol (MCP) 2025-06-18 specification** and uses the official MCP SDK.
 
 ## Features
 
@@ -11,6 +11,10 @@ This MCP server provides email processing capabilities with MongoDB integration 
 - Generate vector embeddings using Ollama
 - Multi-mailbox support
 - Support for Inbox, Sent Items, and optionally Deleted Items folders
+- **MCP 2025-06-18 Compliance**: Structured output, HTTP transport support, protocol version negotiation
+- **Structured Tool Results**: Tools return properly typed, validated data structures
+- **HTTP Transport**: Supports both STDIO and HTTP (Streamable HTTP) transports
+- **Enhanced Metadata**: Tool titles and descriptions for better UI integration
 
 ## Upcoming Features
 
@@ -63,10 +67,7 @@ This MCP server provides email processing capabilities with MongoDB integration 
 uv pip install -e .
 ```
 
-5. Install the fastmcp package:
-```bash
-uv pip install fastmcp
-```
+5. The dependencies are now installed automatically from pyproject.toml, including the official MCP SDK.
 
 6. Make sure Ollama is running locally with required models:
 ```bash
@@ -75,6 +76,8 @@ ollama pull nomic-embed-text
 
 
 ## Configuration
+
+### STDIO Transport (Default)
 
 Add the server to your Claude for Desktop configuration file:
 
@@ -125,15 +128,46 @@ Configuration fields explained:
 
 Replace the paths with the actual paths on your system. Note that Windows paths in the `env` section should use double backslashes.
 
+### HTTP Transport (2025-06-18 Compliant)
+
+For HTTP transport, run the server with the `--http` flag:
+
+```bash
+python src/mcp_server.py --http
+```
+
+This will start the server at `http://localhost:8000/mcp` with full 2025-06-18 protocol compliance including:
+- Protocol version negotiation
+- Structured output schemas
+- HTTP header validation
+- Proper error handling
+
+The HTTP transport supports both stateful and stateless operation modes and is the recommended approach for production deployments.
+
 ## Available Tools
 
 ### 1. process_emails
-Process emails from a specified date range:
+Process emails from a specified date range and return structured results:
+
+**Input:**
 ```python
 {
   "start_date": "2024-01-01",    # ISO format date (YYYY-MM-DD)
   "end_date": "2024-02-15",      # ISO format date (YYYY-MM-DD)
   "mailboxes": ["All"]           # List of mailbox names or ["All"] for all mailboxes
+}
+```
+
+**Output (Structured):**
+```python
+{
+  "success": true,
+  "processed_count": 150,
+  "retrieved_count": 200,
+  "stored_count": 180,
+  "failed_count": 20,
+  "message": "Successfully processed 150 emails (retrieved: 200, stored: 180, failed: 20)",
+  "error": null
 }
 ```
 
@@ -143,6 +177,7 @@ The tool will:
 3. Store emails in SQLite database
 4. Generate embeddings using Ollama
 5. Store embeddings in MongoDB for semantic search
+6. Return structured results with detailed statistics
 
 
 ## Example Usage in Claude
@@ -188,6 +223,33 @@ The server implements proper resource management to prevent issues:
 - Connection management is designed to balance resource usage with operational reliability
 - Robust retry logic for external services like Ollama to handle temporary connection issues
 
+## MCP 2025-06-18 Compliance
+
+This server has been upgraded to comply with the MCP 2025-06-18 specification:
+
+### Protocol Features
+- **Protocol Version**: Declares `protocolVersion: "2025-06-18"` during handshake
+- **Structured Output**: All tools return typed, validated Pydantic models
+- **HTTP Transport**: Supports Streamable HTTP with proper header validation
+- **Tool Metadata**: Enhanced tool descriptions with titles and schemas
+- **Error Handling**: Structured error responses with detailed information
+
+### Transport Support
+- **STDIO**: Traditional stdin/stdout communication (default)
+- **HTTP**: Streamable HTTP on localhost:8000/mcp with header validation
+- **Protocol Headers**: Validates MCP-Protocol-Version and Origin headers
+- **Single-Message JSON-RPC**: No batch request support per 2025-06-18 spec
+
+### Structured Output
+The `process_emails` tool returns a structured `ProcessEmailsResult` with:
+- `success`: Boolean indicating operation success
+- `processed_count`: Number of emails successfully processed
+- `retrieved_count`: Total emails retrieved from Outlook
+- `stored_count`: Number of emails stored in SQLite
+- `failed_count`: Number of emails that failed processing
+- `message`: Human-readable status message
+- `error`: Error details if operation failed
+
 ## Security Notes
 
 - The server only processes emails from specified mailboxes
@@ -195,6 +257,7 @@ The server implements proper resource management to prevent issues:
 - No external API calls except to local Ollama server
 - Requires explicit user approval for email processing
 - No sensitive email data is exposed through the MCP interface
+- HTTP transport binds only to localhost for security
 
 ## Debugging
 
