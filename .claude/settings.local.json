@@ -13,12 +13,18 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:docs.anthropic.com)",
       "Bash(pip install:*)",
-      "Bash(pip3 install:*)"
+      "Bash(pip3 install:*)",
+      "WebFetch(domain:docs.langchain.com)",
+      "WebSearch",
+      "WebFetch(domain:api.python.langchain.com)",
+      "Bash(.venv/Scripts/python.exe -m pip install:*)",
+      "Bash(uv pip install:*)",
+      "Bash(.venv/Scripts/python.exe:*)"
     ],
     "deny": []
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "ollama"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

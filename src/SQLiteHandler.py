@@ -58,11 +58,28 @@ class SQLiteHandler:
     def _create_tables(self) -> None:
         """Create necessary database tables if they don't exist."""
         cursor = self.conn.cursor()
-        
-        # Drop and recreate emails table
-        cursor.execute('DROP TABLE IF EXISTS emails')
-        
-        # Create main emails table
+
+        # Check if table exists
+        cursor.execute('''
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='emails'
+        ''')
+        table_exists = cursor.fetchone() is not None
+
+        if table_exists:
+            # Table exists, just ensure indexes exist
+            logger.info("Emails table already exists, verifying indexes")
+            try:
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_folder ON emails(folder)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_received_time ON emails(received_time)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_processed ON emails(processed)')
+                self.conn.commit()
+            except Exception as e:
+                logger.warning(f"Error creating indexes: {str(e)}")
+            return
+
+        # Create table only if it doesn't exist
+        logger.info("Creating emails table for the first time")
         cursor.execute('''
         CREATE TABLE emails (
             id TEXT PRIMARY KEY,
@@ -83,12 +100,12 @@ class SQLiteHandler:
             attachments TEXT
         )
         ''')
-        
+
         # Create optimized indices
         cursor.execute('CREATE INDEX idx_folder ON emails(folder)')
         cursor.execute('CREATE INDEX idx_received_time ON emails(received_time)')
         cursor.execute('CREATE INDEX idx_processed ON emails(processed)')
-        
+
         self.conn.commit()
 
     def add_or_update_email(self, email: EmailMetadata, cursor: Optional[sqlite3.Cursor] = None) -> bool:
@@ -254,29 +271,148 @@ class SQLiteHandler:
     def mark_as_processed(self, email_id: str) -> bool:
         """
         Mark an email as processed after generating its embedding.
-        
+
         Args:
             email_id (str): ID of the email to mark
-            
+
         Returns:
             bool: True if successful
         """
+        max_retries = 3
+
+        for attempt in range(max_retries):
+            try:
+                cursor = self.conn.cursor()
+
+                # Use explicit transaction
+                cursor.execute('BEGIN IMMEDIATE')
+                cursor.execute('''
+                UPDATE emails
+                SET processed = TRUE,
+                    last_updated = ?
+                WHERE id = ?
+                ''', (datetime.now().isoformat(), email_id))
+
+                cursor.execute('COMMIT')
+                logger.debug(f"Marked email {email_id} as processed")
+                return True
+
+            except sqlite3.OperationalError as e:
+                cursor.execute('ROLLBACK')
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Database locked, retry {attempt + 1}/{max_retries}")
+                    time.sleep(1)
+                    continue
+                logger.error(f"SQLite operational error: {str(e)}")
+                return False
+            except Exception as e:
+                if 'cursor' in locals():
+                    try:
+                        cursor.execute('ROLLBACK')
+                    except:
+                        pass
+                logger.error(f"Error marking email as processed: {str(e)}", exc_info=True)
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                return False
+
+        return False
+
+    def get_consistency_report(self) -> Dict[str, Any]:
+        """
+        Generate a consistency report on email processing status.
+
+        Returns:
+            Dict with consistency metrics:
+            - total_emails: Total emails in SQLite
+            - processed_emails: Emails marked as processed
+            - unprocessed_emails: Emails not yet processed
+            - processing_rate: Percentage of emails processed
+        """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('''
-            UPDATE emails 
-            SET processed = TRUE, 
-                last_updated = ? 
-            WHERE id = ?
-            ''', (datetime.now().isoformat(), email_id))
-            
-            self.conn.commit()
-            return True
-            
+
+            # Total emails
+            cursor.execute('SELECT COUNT(*) FROM emails')
+            total = cursor.fetchone()[0]
+
+            # Processed emails
+            cursor.execute('SELECT COUNT(*) FROM emails WHERE processed = TRUE')
+            processed = cursor.fetchone()[0]
+
+            # Unprocessed emails
+            unprocessed = total - processed
+
+            # Processing rate
+            rate = (processed / total * 100) if total > 0 else 0
+
+            return {
+                'total_emails': total,
+                'processed_emails': processed,
+                'unprocessed_emails': unprocessed,
+                'processing_rate': rate
+            }
+
         except Exception as e:
-            logger.error(f"Error marking email as processed: {str(e)}", exc_info=True)
-            self.conn.rollback()
-            return False
+            logger.error(f"Error generating consistency report: {str(e)}", exc_info=True)
+            return {
+                'total_emails': 0,
+                'processed_emails': 0,
+                'unprocessed_emails': 0,
+                'processing_rate': 0,
+                'error': str(e)
+            }
+
+    def verify_processed_emails_have_embeddings(self, mongodb_handler) -> Dict[str, Any]:
+        """
+        Cross-reference SQLite processed flag with MongoDB embeddings.
+
+        Args:
+            mongodb_handler: MongoDBHandler instance to check embeddings
+
+        Returns:
+            Dict with verification results:
+            - processed_count: Emails marked as processed in SQLite
+            - embedding_count: Emails with embeddings in MongoDB
+            - missing_embeddings: IDs of processed emails without embeddings
+            - orphaned_embeddings: IDs in MongoDB but not in SQLite
+            - consistent: Whether data is consistent
+        """
+        try:
+            cursor = self.conn.cursor()
+
+            # Get all processed email IDs from SQLite
+            cursor.execute('SELECT id FROM emails WHERE processed = TRUE')
+            processed_ids = {row[0] for row in cursor.fetchall()}
+
+            # Get all email IDs from MongoDB
+            mongo_ids = set()
+            for doc in mongodb_handler.collection.find({}, {'id': 1}):
+                mongo_ids.add(doc['id'])
+
+            # Find discrepancies
+            missing_embeddings = processed_ids - mongo_ids  # In SQLite but not MongoDB
+            orphaned_embeddings = mongo_ids - processed_ids  # In MongoDB but not SQLite
+
+            return {
+                'processed_count': len(processed_ids),
+                'embedding_count': len(mongo_ids),
+                'missing_embeddings': list(missing_embeddings),
+                'orphaned_embeddings': list(orphaned_embeddings),
+                'consistent': len(missing_embeddings) == 0 and len(orphaned_embeddings) == 0
+            }
+
+        except Exception as e:
+            logger.error(f"Error verifying consistency: {str(e)}", exc_info=True)
+            return {
+                'processed_count': 0,
+                'embedding_count': 0,
+                'missing_embeddings': [],
+                'orphaned_embeddings': [],
+                'consistent': False,
+                'error': str(e)
+            }
 
     def get_email_by_id(self, email_id: str) -> Optional[Dict[str, Any]]:
         """

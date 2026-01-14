@@ -55,13 +55,6 @@ This MCP server provides email processing capabilities with MongoDB integration 
     .venv\Scripts\activate
     ```
 
-   
-    macOS/Linux: 
-
-    ```python
-    source .venv/bin/activate
-    ```
-
 4. Install dependencies:
 ```bash
 uv pip install -e .
@@ -82,7 +75,6 @@ ollama pull nomic-embed-text
 Add the server to your Claude for Desktop configuration file:
 
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
