@@ -31,44 +31,91 @@ class EmbeddingProcessor:
         
         # Initialize Ollama embeddings
         try:
+            embedding_model = os.getenv("EMBEDDING_MODEL")
+            embedding_base_url = os.getenv("EMBEDDING_BASE_URL")
+            
+            logger.info(f"Initializing Ollama embeddings with model={embedding_model}, base_url={embedding_base_url}")
+            
             self.embeddings = OllamaEmbeddings(
-                model=os.getenv("EMBEDDING_MODEL"),
-                base_url=os.getenv("EMBEDDING_BASE_URL")
+                model=embedding_model,
+                base_url=embedding_base_url
             )
+            
+            # Test connection by generating a simple embedding
+            logger.info("Testing Ollama connection...")
+            test_embedding = self.embeddings.embed_query("test")
+            if test_embedding and len(test_embedding) > 0:
+                logger.info(f"Ollama connection successful. Embedding dimension: {len(test_embedding)}")
+            else:
+                logger.warning("Ollama returned empty embedding for test query")
+                
         except Exception as e:
+            logger.error(f"Failed to initialize Ollama embeddings: {str(e)}")
             raise
     
     def create_email_content(self, email: Dict[str, Any]) -> str:
         """Create a formatted string of email content for embedding."""
+        # Handle None values gracefully
+        subject = email.get('Subject') or '(No Subject)'
+        sender_name = email.get('SenderName') or 'Unknown'
+        sender_email = email.get('SenderEmailAddress') or ''
+        to = email.get('To') or ''
+        received_time = email.get('ReceivedTime') or ''
+        body = email.get('Body') or ''
+        
         return f"""
-Subject: {email.get('Subject', '')}
-From: {email.get('SenderName', '')} <{email.get('SenderEmailAddress', '')}>
-To: {email.get('To', '')}
-Date: {email.get('ReceivedTime', '')}
+Subject: {subject}
+From: {sender_name} <{sender_email}>
+To: {to}
+Date: {received_time}
 
-{email.get('Body', '')}
+{body}
 """
 
-    def validate_email_data(self, email: Dict[str, Any]) -> bool:
-        """Validate email data structure and content."""
-        required_fields = [
-            'Subject', 'SenderName', 'SenderEmailAddress', 'To', 
-            'ReceivedTime', 'Folder', 'AccountName', 'Body'
-        ]
+    def validate_email_data(self, email: Dict[str, Any]) -> Tuple[bool, str]:
+        """Validate email data structure and content.
+        
+        Returns:
+            Tuple[bool, str]: (is_valid, reason_if_invalid)
+        """
+        # Only truly required fields - must exist and not be None
+        required_fields = ['id', 'ReceivedTime', 'Folder', 'AccountName']
+        
+        # Fields that should exist but can be empty/None
+        optional_fields = ['Subject', 'SenderName', 'SenderEmailAddress', 'To', 'Body']
         
         # Check required fields exist and are not None
         for field in required_fields:
-            if field not in email or email[field] is None:
-                return False
+            if field not in email:
+                return False, f"Missing required field: {field}"
+            if email[field] is None:
+                return False, f"Required field is None: {field}"
+        
+        # Check optional fields exist (but can be None or empty)
+        for field in optional_fields:
+            if field not in email:
+                return False, f"Missing optional field: {field}"
+        
+        # Must have SOME content to embed (subject or body)
+        subject = email.get('Subject') or ''
+        body = email.get('Body') or ''
+        if not subject.strip() and not body.strip():
+            return False, "Email has no subject and no body - nothing to embed"
                 
         # Validate dates are in ISO format
         try:
             if email['ReceivedTime']:
-                datetime.fromisoformat(email['ReceivedTime'])
-        except (ValueError, TypeError):
-            return False
+                # Handle datetime strings with timezone info
+                received_time = email['ReceivedTime']
+                if isinstance(received_time, str):
+                    # Remove timezone suffix if present for fromisoformat compatibility
+                    if '+' in received_time:
+                        received_time = received_time.split('+')[0]
+                    datetime.fromisoformat(received_time)
+        except (ValueError, TypeError) as e:
+            return False, f"Invalid ReceivedTime format: {email.get('ReceivedTime')} - {str(e)}"
             
-        return True
+        return True, ""
 
     def process_batch(self, emails: List[Dict[str, Any]], batch_size: int = 4) -> Tuple[int, int]:
         """
@@ -89,22 +136,29 @@ Date: {email.get('ReceivedTime', '')}
         for i, email in enumerate(emails):
             try:
                 # Validate email data
-                if not self.validate_email_data(email):
+                is_valid, validation_reason = self.validate_email_data(email)
+                if not is_valid:
+                    logger.warning(f"Email validation failed for {email.get('id', 'unknown')}: {validation_reason}")
                     failed_count += 1
                     continue
                     
                 # Create content for embedding
                 content = self.create_email_content(email)
                 
-                # Create metadata dictionary
+                # Get the email ID (used for both root-level storage and metadata)
+                email_id = email.get('id', str(uuid.uuid4()))
+                
+                # Create metadata dictionary - IMPORTANT: include 'id' for vector search retrieval
+                # Handle None values to avoid issues
                 metadata = {
-                    'Subject': email.get('Subject', ''),
-                    'SenderName': email.get('SenderName', ''),
-                    'SenderEmailAddress': email.get('SenderEmailAddress', ''),
-                    'To': email.get('To', ''),
-                    'ReceivedTime': email.get('ReceivedTime', ''),
-                    'Folder': email.get('Folder', ''),
-                    'AccountName': email.get('AccountName', '')
+                    'id': email_id,  # Include ID in metadata for downstream retrieval
+                    'Subject': email.get('Subject') or '',
+                    'SenderName': email.get('SenderName') or '',
+                    'SenderEmailAddress': email.get('SenderEmailAddress') or '',
+                    'To': email.get('To') or '',
+                    'ReceivedTime': email.get('ReceivedTime') or '',
+                    'Folder': email.get('Folder') or '',
+                    'AccountName': email.get('AccountName') or ''
                 }
                 
                 # Validate metadata can be JSON encoded
@@ -116,7 +170,7 @@ Date: {email.get('ReceivedTime', '')}
                 
                 documents.append(content)
                 metadatas.append(metadata)
-                ids.append(email.get('id', str(uuid.uuid4())))
+                ids.append(email_id)
                 
             except Exception as e:
                 failed_count += 1

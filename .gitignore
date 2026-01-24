@@ -22,6 +22,7 @@ build/
 
 # Local configuration
 *.local
+*.mcp.json
 
 # VS Code
 .vscode/
