@@ -24,7 +24,7 @@ from datetime import datetime
 from mcp.server.fastmcp import FastMCP, Context
 from MongoDBHandler import MongoDBHandler
 from SQLiteHandler import SQLiteHandler
-from OutlookConnector import OutlookConnector
+from connectors import create_connector, get_available_providers
 from EmailMetadata import EmailMetadata
 from langchain_ollama import OllamaEmbeddings
 from debug_utils import dump_email_debug
@@ -36,7 +36,7 @@ mcp = FastMCP(
         "pymongo",
         "langchain",
         "langchain_ollama",
-        "pywin32"
+        "pytz"
     ]
 )
 
@@ -241,10 +241,18 @@ def validate_config(config: Dict[str, str]) -> None:
     missing_vars = [var for var in required_vars if not config.get(var)]
     if missing_vars:
         raise ValueError(f"Missing required configuration: {', '.join(missing_vars)}")
-    
+
     # Set default values for optional configuration
     if "PROCESS_DELETED_ITEMS" not in config:
         config["PROCESS_DELETED_ITEMS"] = "false"
+
+    # Set default provider to auto-detect
+    if "OUTLOOK_PROVIDER" not in config:
+        config["OUTLOOK_PROVIDER"] = "auto"
+
+    # Log available providers
+    available = get_available_providers()
+    logging.info(f"Available Outlook providers: {available}")
 
 def validate_ollama_connection(base_url: str, model: str, max_retries: int = 3) -> bool:
     """
@@ -373,9 +381,37 @@ class EmailProcessor:
             logger.error(f"Failed to initialize vector search: {str(e)}")
             self.vector_search = None
 
-        # Initialize Outlook connector with deleted items setting
+        # Initialize Outlook connector with platform-appropriate provider
         process_deleted = config.get("PROCESS_DELETED_ITEMS", "false").lower() == "true"
-        self.outlook = OutlookConnector(process_deleted_items=process_deleted)
+        provider = config.get("OUTLOOK_PROVIDER", "auto")
+        timezone = config.get("LOCAL_TIMEZONE")
+
+        # Get Graph API credentials if specified
+        graph_kwargs = {}
+        if config.get("GRAPH_CLIENT_ID"):
+            graph_kwargs["client_id"] = config["GRAPH_CLIENT_ID"]
+        if config.get("GRAPH_CLIENT_SECRET"):
+            graph_kwargs["client_secret"] = config["GRAPH_CLIENT_SECRET"]
+        if config.get("GRAPH_TENANT_ID"):
+            graph_kwargs["tenant_id"] = config["GRAPH_TENANT_ID"]
+        # Support new multi-email config (GRAPH_USER_EMAILS) and legacy single email
+        if config.get("GRAPH_USER_EMAILS"):
+            emails_config = config["GRAPH_USER_EMAILS"].strip()
+            if emails_config.lower() == "all":
+                graph_kwargs["user_emails"] = ["All"]
+            else:
+                graph_kwargs["user_emails"] = [e.strip() for e in emails_config.split(",") if e.strip()]
+        elif config.get("GRAPH_USER_EMAIL"):
+            # Legacy single email support
+            graph_kwargs["user_email"] = config["GRAPH_USER_EMAIL"]
+
+        self.outlook = create_connector(
+            provider=provider,
+            process_deleted_items=process_deleted,
+            timezone=timezone,
+            **graph_kwargs
+        )
+        logger.info(f"Initialized Outlook connector: {self.outlook.provider_name}")
 
     async def process_emails(
         self,
@@ -427,6 +463,7 @@ class EmailProcessor:
             await ctx.report_progress(10, f"Retrieving emails from {', '.join(folder_names)}")
             
             all_emails = []
+            failed_mailboxes = []
             for i, mailbox in enumerate(outlook_mailboxes):
                 try:
                     emails = self.outlook.get_emails_within_date_range(
@@ -435,14 +472,20 @@ class EmailProcessor:
                         end.isoformat(),
                         [mailbox]
                     )
-                    
+
                     if emails:
                         all_emails.extend(emails)
-                    
+
                     progress = 10 + (40 * (i + 1) / len(outlook_mailboxes))
                     await ctx.report_progress(progress, f"Processing mailbox {i+1}/{len(outlook_mailboxes)}")
-                except Exception:
+                except Exception as e:
+                    mailbox_name = getattr(mailbox, 'display_name', str(mailbox))
+                    logger.error(f"Failed to process mailbox '{mailbox_name}': {e}")
+                    failed_mailboxes.append(mailbox_name)
                     continue
+
+            if failed_mailboxes:
+                logger.warning(f"Failed to process {len(failed_mailboxes)} mailbox(es): {', '.join(failed_mailboxes)}")
 
             if not all_emails:
                 return ProcessEmailsResult(
@@ -557,7 +600,16 @@ try:
         "EMBEDDING_BASE_URL": os.environ.get("EMBEDDING_BASE_URL"),
         "EMBEDDING_MODEL": os.environ.get("EMBEDDING_MODEL"),
         "COLLECTION_NAME": os.environ.get("COLLECTION_NAME"),
-        "PROCESS_DELETED_ITEMS": os.environ.get("PROCESS_DELETED_ITEMS", "false")
+        "PROCESS_DELETED_ITEMS": os.environ.get("PROCESS_DELETED_ITEMS", "false"),
+        # Platform/provider configuration
+        "OUTLOOK_PROVIDER": os.environ.get("OUTLOOK_PROVIDER", "auto"),
+        "LOCAL_TIMEZONE": os.environ.get("LOCAL_TIMEZONE"),
+        # Graph API configuration (optional)
+        "GRAPH_CLIENT_ID": os.environ.get("GRAPH_CLIENT_ID"),
+        "GRAPH_CLIENT_SECRET": os.environ.get("GRAPH_CLIENT_SECRET"),
+        "GRAPH_TENANT_ID": os.environ.get("GRAPH_TENANT_ID"),
+        "GRAPH_USER_EMAILS": os.environ.get("GRAPH_USER_EMAILS"),  # New: comma-separated or "All"
+        "GRAPH_USER_EMAIL": os.environ.get("GRAPH_USER_EMAIL"),    # Legacy: single email
     }
 
     # Log environment variables for debugging
@@ -576,6 +628,8 @@ try:
     logging.info(f"EMBEDDING_MODEL: {os.environ.get('EMBEDDING_MODEL')}")
     logging.info(f"COLLECTION_NAME: {os.environ.get('COLLECTION_NAME')}")
     logging.info(f"PROCESS_DELETED_ITEMS: {os.environ.get('PROCESS_DELETED_ITEMS', 'false')}")
+    logging.info(f"OUTLOOK_PROVIDER: {os.environ.get('OUTLOOK_PROVIDER', 'auto')}")
+    logging.info(f"LOCAL_TIMEZONE: {os.environ.get('LOCAL_TIMEZONE', 'UTC')}")
     
     # Validate configuration
     validate_config(config)
@@ -810,18 +864,19 @@ async def search_emails(
             )
 
             # Convert results to EmailItem objects
+            # Note: SQLiteHandler returns capitalized field names (Subject, SenderEmailAddress, etc.)
             emails = []
             for result in search_results:
                 email = EmailItem(
                     id=result.get('id', ''),
-                    subject=result.get('subject', ''),
-                    sender=result.get('sender_email', ''),
-                    recipients=result.get('recipients', '').split(';') if result.get('recipients') else [],
-                    sent_date=result.get('sent_time', ''),
-                    body_preview=result.get('body', '')[:200] if result.get('body') else '',
-                    folder=result.get('folder', ''),
+                    subject=result.get('Subject', ''),
+                    sender=result.get('SenderEmailAddress', ''),
+                    recipients=result.get('To', '').split(';') if result.get('To') else [],
+                    sent_date=result.get('SentOn', '') or result.get('ReceivedTime', ''),
+                    body_preview=result.get('Body', '')[:200] if result.get('Body') else '',
+                    folder=result.get('Folder', ''),
                     importance=result.get('importance', 'normal'),
-                    has_attachments=bool(result.get('has_attachments', False)),
+                    has_attachments=bool(result.get('Attachments', '')),
                     thread_id=result.get('thread_id')
                 )
                 emails.append(email)
@@ -1051,9 +1106,10 @@ async def analyze_email_sentiment(
         formal_words = ['sincerely', 'regards', 'please', 'kindly', 'respectfully']
         casual_words = ['hey', 'hi', 'thanks', 'cool', 'awesome', 'great!']
         
+        # Note: SQLiteHandler returns capitalized field names (Subject, Body, etc.)
         for email in emails:
-            body = email.get('body', '').lower()
-            subject = email.get('subject', '').lower()
+            body = (email.get('Body', '') or '').lower()
+            subject = (email.get('Subject', '') or '').lower()
             text = f"{subject} {body}"
             
             # Count sentiment indicators
@@ -1200,14 +1256,16 @@ async def export_email_data(
                 <h1>Email Export Report</h1>
             """
             
+            # Note: SQLiteHandler returns capitalized field names (Subject, SenderEmailAddress, etc.)
             for email in emails:
+                body = email.get('Body', '') or ''
                 html_content += f"""
                 <div class="email">
                     <div class="header">
-                        <div class="subject">{email.get('subject', 'No Subject')}</div>
-                        <div class="meta">From: {email.get('sender', 'Unknown')} | Date: {email.get('sent_date', 'Unknown')} | Folder: {email.get('folder', 'Unknown')}</div>
+                        <div class="subject">{email.get('Subject', 'No Subject')}</div>
+                        <div class="meta">From: {email.get('SenderEmailAddress', 'Unknown')} | Date: {email.get('ReceivedTime', 'Unknown')} | Folder: {email.get('Folder', 'Unknown')}</div>
                     </div>
-                    <div class="body">{email.get('body', '')[:500]}{'...' if len(email.get('body', '')) > 500 else ''}</div>
+                    <div class="body">{body[:500]}{'...' if len(body) > 500 else ''}</div>
                 </div>
                 """
             
@@ -1300,11 +1358,12 @@ async def find_actionable_items(
             'appointment', 'schedule', 'agenda', 'minutes'
         ]
         
+        # Note: SQLiteHandler returns capitalized field names (Subject, Body, etc.)
         for email in emails:
             email_id = email.get('id', '')
-            subject = email.get('subject', '').lower()
-            body = email.get('body', '').lower()
-            sender = email.get('sender', '')
+            subject = (email.get('Subject', '') or '').lower()
+            body = (email.get('Body', '') or '').lower()
+            sender = email.get('SenderEmailAddress', '')
             text = f"{subject} {body}"
             
             # Check for meetings
@@ -1688,13 +1747,14 @@ async def get_recent_emails(days: str) -> str:
         # Format as readable text
         result = f"Recent emails from the last {days} days ({len(emails)} found):\n\n"
         
+        # Note: SQLiteHandler returns capitalized field names
         for email in emails[:50]:  # Limit to 50 for readability
-            result += f"Subject: {email.get('subject', 'No Subject')}\n"
-            result += f"From: {email.get('sender', 'Unknown')}\n"
-            result += f"Date: {email.get('sent_date', 'Unknown')}\n"
-            result += f"Folder: {email.get('folder', 'Unknown')}\n"
-            if email.get('body'):
-                preview = email['body'][:150].replace('\n', ' ')
+            result += f"Subject: {email.get('Subject', 'No Subject')}\n"
+            result += f"From: {email.get('SenderEmailAddress', 'Unknown')}\n"
+            result += f"Date: {email.get('ReceivedTime', 'Unknown')}\n"
+            result += f"Folder: {email.get('Folder', 'Unknown')}\n"
+            if email.get('Body'):
+                preview = email['Body'][:150].replace('\n', ' ')
                 result += f"Preview: {preview}...\n"
             result += "\n---\n\n"
         
@@ -1732,14 +1792,15 @@ async def get_folder_contents(folder_name: str) -> str:
         from collections import defaultdict
         emails_by_date = defaultdict(list)
         
+        # Note: SQLiteHandler returns capitalized field names
         for email in emails:
-            date_key = email.get('sent_date', 'Unknown')[:10]  # Just the date part
+            date_key = (email.get('ReceivedTime', '') or 'Unknown')[:10]  # Just the date part
             emails_by_date[date_key].append(email)
-        
+
         for date, day_emails in sorted(emails_by_date.items(), reverse=True):
             result += f"📅 {date} ({len(day_emails)} emails)\n"
             for email in day_emails[:10]:  # Limit per day
-                result += f"  • {email.get('subject', 'No Subject')} - {email.get('sender', 'Unknown')}\n"
+                result += f"  • {email.get('Subject', 'No Subject')} - {email.get('SenderEmailAddress', 'Unknown')}\n"
             if len(day_emails) > 10:
                 result += f"  ... and {len(day_emails) - 10} more\n"
             result += "\n"

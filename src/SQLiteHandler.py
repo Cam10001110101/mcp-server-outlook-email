@@ -831,9 +831,51 @@ class SQLiteHandler:
             
             cursor.execute(query, (folder_name,))
             return [dict(row) for row in cursor.fetchall()]
-            
+
         except Exception as e:
             logger.error(f"Error getting emails by folder: {str(e)}", exc_info=True)
+            return []
+
+    def get_emails_in_range(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        Get all emails within a date range.
+
+        Args:
+            start_date (str): Start date in ISO format (YYYY-MM-DD)
+            end_date (str): End date in ISO format (YYYY-MM-DD)
+
+        Returns:
+            List[Dict]: List of emails within the date range
+        """
+        try:
+            cursor = self.conn.cursor()
+
+            query = '''
+            SELECT
+                id,
+                account as AccountName,
+                folder as Folder,
+                subject as Subject,
+                sender_name as SenderName,
+                sender_email as SenderEmailAddress,
+                received_time as ReceivedTime,
+                sent_time as SentOn,
+                recipients as "To",
+                body as Body,
+                COALESCE(attachments, '') as Attachments,
+                is_task as IsMarkedAsTask,
+                unread as UnRead,
+                categories as Categories
+            FROM emails
+            WHERE DATE(received_time) >= ? AND DATE(received_time) <= ?
+            ORDER BY received_time DESC
+            '''
+
+            cursor.execute(query, (start_date, end_date))
+            return [dict(row) for row in cursor.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Error getting emails in range: {str(e)}", exc_info=True)
             return []
 
     def get_contact_interactions(self, email_address: str) -> List[Dict[str, Any]]:
