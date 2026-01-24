@@ -53,8 +53,15 @@ class EmbeddingProcessor:
             logger.error(f"Failed to initialize Ollama embeddings: {str(e)}")
             raise
     
+    # Maximum characters for embedding content (nomic-embed-text has ~8192 token limit)
+    # Using 4000 chars to safely fit within context limit with metadata overhead
+    MAX_BODY_CHARS = 4000
+
     def create_email_content(self, email: Dict[str, Any]) -> str:
-        """Create a formatted string of email content for embedding."""
+        """Create a formatted string of email content for embedding.
+
+        Truncates body content to MAX_BODY_CHARS to fit within model context limits.
+        """
         # Handle None values gracefully
         subject = email.get('Subject') or '(No Subject)'
         sender_name = email.get('SenderName') or 'Unknown'
@@ -62,7 +69,12 @@ class EmbeddingProcessor:
         to = email.get('To') or ''
         received_time = email.get('ReceivedTime') or ''
         body = email.get('Body') or ''
-        
+
+        # Truncate body if too long for embedding model context
+        if len(body) > self.MAX_BODY_CHARS:
+            body = body[:self.MAX_BODY_CHARS] + "... [truncated]"
+            logger.debug(f"Truncated email body from {len(email.get('Body', ''))} to {self.MAX_BODY_CHARS} chars")
+
         return f"""
 Subject: {subject}
 From: {sender_name} <{sender_email}>
