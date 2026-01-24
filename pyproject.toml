@@ -9,8 +9,9 @@ dependencies = [
     "langchain_core",
     "langchain-community",
     "langchain-ollama",
+    "langchain-mongodb",
     "pymongo",
-    "fastmcp",
+    "mcp[cli]",
     "pydantic",
     "pytz",
 ]

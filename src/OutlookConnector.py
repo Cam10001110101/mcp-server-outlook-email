@@ -42,6 +42,67 @@ class OutlookConnector:
                 pass
         return None
 
+    def _get_store_for_account(self, account):
+        """Find the correct MAPI store for a given account by name matching."""
+        if not self.outlook:
+            return None
+
+        account_name = account.DisplayName.lower()
+        account_smtp = getattr(account, 'SmtpAddress', '').lower()
+
+        try:
+            for store in self.outlook.Folders:
+                store_name = store.Name.lower()
+
+                # Match by display name or email address
+                if store_name == account_name:
+                    return store
+                if account_smtp and (store_name == account_smtp or account_smtp in store_name):
+                    return store
+                if account_name in store_name or store_name in account_name:
+                    return store
+        except Exception:
+            pass
+
+        # Fallback to DeliveryStore (may work for Exchange)
+        try:
+            return account.DeliveryStore
+        except Exception:
+            return None
+
+    def _get_folder_by_name(self, store, folder_name):
+        """Get a folder by name when GetDefaultFolder is unavailable."""
+        if not store:
+            return None
+
+        try:
+            for subfolder in store.Folders:
+                if subfolder.Name == folder_name:
+                    return subfolder
+                # Handle common variations
+                name_lower = subfolder.Name.lower()
+                if folder_name == "Inbox" and name_lower in ['inbox', 'boite de reception']:
+                    return subfolder
+                if folder_name == "Sent Items" and name_lower in ['sent items', 'sent']:
+                    return subfolder
+                if folder_name == "Deleted Items" and name_lower in ['deleted items', 'trash']:
+                    return subfolder
+        except Exception:
+            pass
+        return None
+
+    def _is_folder_in_store(self, folder, store):
+        """Verify a folder belongs to the expected store by comparing StoreIDs."""
+        if not folder or not store:
+            return False
+        try:
+            folder_store_id = folder.StoreID
+            store_id = store.StoreID
+            return folder_store_id == store_id
+        except Exception:
+            # If we can't verify, assume it's not in the store
+            return False
+
     @staticmethod
     def clean_email_body(body):
         """Clean email body by removing problematic content and escaping for JSON."""
@@ -92,19 +153,36 @@ class OutlookConnector:
         
         for account in mailboxes:
             try:
-                store = account.DeliveryStore
-                
+                store = self._get_store_for_account(account)
+                if store is None:
+                    continue
+
                 # Process each requested folder
                 for folder_name in folder_names:
                     # Skip Deleted Items folder if not enabled
                     if folder_name == "Deleted Items" and not self.process_deleted_items:
                         continue
-                        
+
                     folder_id = folder_ids.get(folder_name)
                     if not folder_id:
                         continue
-                        
-                    folder = store.GetDefaultFolder(folder_id)
+
+                    # Try GetDefaultFolder, verify it's in the correct store, fallback to name lookup
+                    folder = None
+                    try:
+                        temp_folder = store.GetDefaultFolder(folder_id)
+                        # Verify the folder belongs to this store (not a different account)
+                        if self._is_folder_in_store(temp_folder, store):
+                            folder = temp_folder
+                    except Exception:
+                        pass
+
+                    # Fallback to name lookup if GetDefaultFolder failed or returned wrong store's folder
+                    if folder is None:
+                        folder = self._get_folder_by_name(store, folder_name)
+
+                    if folder is None:
+                        continue
                     if folder and folder.Items.Count > 0:
                         items = folder.Items
                     
