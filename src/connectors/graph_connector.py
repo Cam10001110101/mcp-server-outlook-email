@@ -50,6 +50,7 @@ class GraphAPIConnector(OutlookConnectorBase):
         client_secret: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_email: Optional[str] = None,
+        user_emails: Optional[List[str]] = None,
         **kwargs
     ):
         """
@@ -61,7 +62,8 @@ class GraphAPIConnector(OutlookConnectorBase):
             client_id: Azure AD application (client) ID
             client_secret: Azure AD client secret (for app-only auth)
             tenant_id: Azure AD tenant ID
-            user_email: User email for delegated auth or mailbox to access
+            user_email: (Deprecated) Single user email - use user_emails instead
+            user_emails: List of user emails to access, or ["All"] to discover all
             **kwargs: Additional options
         """
         super().__init__(
@@ -74,30 +76,85 @@ class GraphAPIConnector(OutlookConnectorBase):
         self.client_id = client_id or os.environ.get('GRAPH_CLIENT_ID')
         self.client_secret = client_secret or os.environ.get('GRAPH_CLIENT_SECRET')
         self.tenant_id = tenant_id or os.environ.get('GRAPH_TENANT_ID', 'common')
-        self.user_email = user_email or os.environ.get('GRAPH_USER_EMAIL')
+
+        # Parse user emails configuration
+        # Priority: user_emails param > GRAPH_USER_EMAILS env > user_email param > GRAPH_USER_EMAIL env > "All"
+        self.user_emails = self._parse_user_emails(user_emails, user_email)
+
+        # Keep single user_email for backwards compatibility (first in list or None)
+        self.user_email = self.user_emails[0] if self.user_emails and self.user_emails[0].lower() != "all" else None
 
         self._access_token = None
         self._token_expiry = None
         self._msal_app = None
         self._authenticated_user = None
         self._use_app_only_auth = bool(client_secret)  # App-only if we have a secret
+        self._discovered_mailboxes: Optional[List[str]] = None  # Cache for discovered mailboxes
+
+    def _parse_user_emails(
+        self,
+        user_emails: Optional[List[str]],
+        user_email: Optional[str]
+    ) -> List[str]:
+        """
+        Parse user emails configuration from various sources.
+
+        Priority:
+        1. user_emails parameter (if provided)
+        2. GRAPH_USER_EMAILS environment variable
+        3. user_email parameter (legacy, single email)
+        4. GRAPH_USER_EMAIL environment variable (legacy)
+        5. Default to ["All"] to discover all mailboxes
+
+        Args:
+            user_emails: List of emails or ["All"]
+            user_email: Single email (legacy)
+
+        Returns:
+            List of email addresses or ["All"]
+        """
+        # Check user_emails param first
+        if user_emails:
+            return user_emails
+
+        # Check GRAPH_USER_EMAILS env var (comma-separated or "All")
+        env_emails = os.environ.get('GRAPH_USER_EMAILS', '').strip()
+        if env_emails:
+            if env_emails.lower() == 'all':
+                return ["All"]
+            # Parse comma-separated list
+            emails = [e.strip() for e in env_emails.split(',') if e.strip()]
+            if emails:
+                return emails
+
+        # Fall back to legacy single email
+        legacy_email = user_email or os.environ.get('GRAPH_USER_EMAIL', '').strip()
+        if legacy_email:
+            return [legacy_email]
+
+        # Default: discover all mailboxes
+        return ["All"]
 
     @property
     def provider_name(self) -> str:
         return "graph"
 
-    def _get_user_endpoint(self) -> str:
+    def _get_user_endpoint(self, email: Optional[str] = None) -> str:
         """
         Get the correct user endpoint path based on auth type.
 
         For delegated auth (user signs in): /me
         For app-only auth (client credentials): /users/{email}
 
+        Args:
+            email: Optional email to use (for multi-mailbox support)
+
         Returns:
             API path prefix for user-specific operations
         """
-        if self._use_app_only_auth and self.user_email:
-            return f"/users/{self.user_email}"
+        target_email = email or self.user_email
+        if self._use_app_only_auth and target_email:
+            return f"/users/{target_email}"
         return "/me"
 
     @property
@@ -259,31 +316,138 @@ class GraphAPIConnector(OutlookConnectorBase):
 
         return self._authenticated_user
 
+    def _discover_all_mailboxes(self) -> List[str]:
+        """
+        Discover all licensed mailboxes in the tenant.
+
+        Uses the Graph API to list all users with Exchange licenses.
+        Requires User.Read.All application permission.
+
+        Returns:
+            List of email addresses for all licensed users
+        """
+        if self._discovered_mailboxes is not None:
+            return self._discovered_mailboxes
+
+        emails = []
+
+        try:
+            # Query users with mail attribute set (indicates they have a mailbox)
+            # Filter for users that have a mail address
+            params = {
+                "$filter": "mail ne null",
+                "$select": "id,displayName,mail,userPrincipalName",
+                "$top": 999,  # Max per page
+            }
+
+            next_link = "/users"
+            max_pages = 10  # Limit to 9990 users
+
+            page_count = 0
+            while next_link and page_count < max_pages:
+                try:
+                    if next_link.startswith("http"):
+                        import requests
+                        token = self._acquire_token()
+                        response = requests.get(
+                            next_link,
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=30
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                    else:
+                        result = self._make_request(next_link, params=params)
+
+                    users = result.get("value", [])
+                    for user in users:
+                        email = user.get("mail") or user.get("userPrincipalName")
+                        if email and "@" in email:
+                            emails.append(email.lower())
+
+                    next_link = result.get("@odata.nextLink")
+                    params = None  # URL includes params
+                    page_count += 1
+
+                except Exception as e:
+                    logger.error(f"Error fetching users page: {e}")
+                    break
+
+            logger.info(f"Discovered {len(emails)} mailboxes in tenant")
+            self._discovered_mailboxes = emails
+
+        except Exception as e:
+            logger.error(f"Failed to discover mailboxes: {e}")
+            self._discovered_mailboxes = []
+
+        return self._discovered_mailboxes
+
+    def _get_user_info(self, email: str) -> Dict[str, Any]:
+        """
+        Get user profile for a specific email address.
+
+        Args:
+            email: Email address of the user
+
+        Returns:
+            User profile dict with displayName, mail, etc.
+        """
+        try:
+            result = self._make_request(f"/users/{email}")
+            return result
+        except Exception as e:
+            logger.warning(f"Could not get user info for {email}: {e}")
+            # Return minimal info
+            return {
+                "displayName": email.split("@")[0],
+                "mail": email,
+                "userPrincipalName": email,
+            }
+
     def get_mailboxes(self) -> List[MailboxInfo]:
         """
-        Get available mailboxes.
+        Get available mailboxes based on configuration.
 
-        For Graph API, this returns the authenticated user's mailbox.
-        For app-only auth with admin consent, could potentially access multiple mailboxes.
+        Returns mailboxes for:
+        - All discovered users if configured with "All"
+        - Specific users if configured with email list
+        - Single user for legacy single-email config
         """
         if not self.is_available:
             return []
 
         mailboxes = []
 
-        try:
-            user = self._get_current_user()
-            mailbox = MailboxInfo(
-                display_name=user.get("displayName", "Microsoft 365"),
-                email_address=user.get("mail") or user.get("userPrincipalName", ""),
-                provider=self.provider_name,
-                account_type="microsoft365",
-                raw_handle={"user_id": user.get("id"), "email": user.get("mail")},
-            )
-            mailboxes.append(mailbox)
+        # Determine which emails to process
+        if self.user_emails and len(self.user_emails) == 1 and self.user_emails[0].lower() == "all":
+            # Discover all mailboxes in tenant
+            email_list = self._discover_all_mailboxes()
+            logger.info(f"Using all {len(email_list)} discovered mailboxes")
+        else:
+            # Use configured list
+            email_list = self.user_emails or []
+            logger.info(f"Using {len(email_list)} configured mailboxes")
 
-        except Exception as e:
-            logger.error(f"Error getting mailboxes: {e}")
+        # Build mailbox info for each email
+        for email in email_list:
+            try:
+                user = self._get_user_info(email)
+                mailbox = MailboxInfo(
+                    display_name=user.get("displayName", email.split("@")[0]),
+                    email_address=user.get("mail") or user.get("userPrincipalName", email),
+                    provider=self.provider_name,
+                    account_type="microsoft365",
+                    raw_handle={"user_id": user.get("id"), "email": email},
+                )
+                mailboxes.append(mailbox)
+                logger.debug(f"Added mailbox: {email}")
+
+            except Exception as e:
+                logger.warning(f"Could not access mailbox {email}: {e}")
+                continue
+
+        if not mailboxes:
+            logger.warning("No accessible mailboxes found")
 
         return mailboxes
 
@@ -412,7 +576,9 @@ class GraphAPIConnector(OutlookConnectorBase):
                     )
 
                     # Paginate through results
-                    user_endpoint = self._get_user_endpoint()
+                    # Use the mailbox's email address for the endpoint
+                    mailbox_email = mailbox.email_address
+                    user_endpoint = self._get_user_endpoint(mailbox_email)
                     next_link = f"{user_endpoint}/mailFolders/{folder_id}/messages"
                     params = {
                         "$filter": filter_query,
