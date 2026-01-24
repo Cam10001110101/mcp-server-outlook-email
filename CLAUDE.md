@@ -80,7 +80,10 @@ The server is configured via environment variables (typically set in Claude Desk
 - `GRAPH_CLIENT_ID`: Azure AD application (client) ID
 - `GRAPH_CLIENT_SECRET`: Azure AD client secret
 - `GRAPH_TENANT_ID`: Azure AD tenant ID (default: "common")
-- `GRAPH_USER_EMAIL`: User email for mailbox access
+- `GRAPH_USER_EMAILS`: Mailboxes to access - comma-separated list or "All" (default: "All")
+  - `"All"`: Discover and access all licensed mailboxes in tenant
+  - `"email1@domain.com,email2@domain.com"`: Access specific mailboxes only
+- `GRAPH_USER_EMAIL`: (Legacy) Single user email - use `GRAPH_USER_EMAILS` instead
 
 ## Architecture
 
@@ -329,7 +332,31 @@ src/
         "GRAPH_CLIENT_ID": "your-azure-ad-client-id",
         "GRAPH_CLIENT_SECRET": "your-client-secret",
         "GRAPH_TENANT_ID": "your-tenant-id",
-        "GRAPH_USER_EMAIL": "user@example.com"
+        "GRAPH_USER_EMAILS": "user1@example.com,user2@example.com"
+      }
+    }
+  }
+}
+```
+
+### Graph API - All Mailboxes (Auto-Discovery)
+```json
+{
+  "mcpServers": {
+    "outlook-email": {
+      "command": "python",
+      "args": ["src/mcp_server.py"],
+      "env": {
+        "MONGODB_URI": "mongodb://localhost:27017/MCP",
+        "SQLITE_DB_PATH": "/data/emails.db",
+        "EMBEDDING_BASE_URL": "http://localhost:11434",
+        "EMBEDDING_MODEL": "nomic-embed-text",
+        "COLLECTION_NAME": "outlook-emails",
+        "OUTLOOK_PROVIDER": "graph",
+        "GRAPH_CLIENT_ID": "your-azure-ad-client-id",
+        "GRAPH_CLIENT_SECRET": "your-client-secret",
+        "GRAPH_TENANT_ID": "your-tenant-id",
+        "GRAPH_USER_EMAILS": "All"
       }
     }
   }

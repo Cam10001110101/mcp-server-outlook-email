@@ -394,7 +394,15 @@ class EmailProcessor:
             graph_kwargs["client_secret"] = config["GRAPH_CLIENT_SECRET"]
         if config.get("GRAPH_TENANT_ID"):
             graph_kwargs["tenant_id"] = config["GRAPH_TENANT_ID"]
-        if config.get("GRAPH_USER_EMAIL"):
+        # Support new multi-email config (GRAPH_USER_EMAILS) and legacy single email
+        if config.get("GRAPH_USER_EMAILS"):
+            emails_config = config["GRAPH_USER_EMAILS"].strip()
+            if emails_config.lower() == "all":
+                graph_kwargs["user_emails"] = ["All"]
+            else:
+                graph_kwargs["user_emails"] = [e.strip() for e in emails_config.split(",") if e.strip()]
+        elif config.get("GRAPH_USER_EMAIL"):
+            # Legacy single email support
             graph_kwargs["user_email"] = config["GRAPH_USER_EMAIL"]
 
         self.outlook = create_connector(
@@ -600,7 +608,8 @@ try:
         "GRAPH_CLIENT_ID": os.environ.get("GRAPH_CLIENT_ID"),
         "GRAPH_CLIENT_SECRET": os.environ.get("GRAPH_CLIENT_SECRET"),
         "GRAPH_TENANT_ID": os.environ.get("GRAPH_TENANT_ID"),
-        "GRAPH_USER_EMAIL": os.environ.get("GRAPH_USER_EMAIL"),
+        "GRAPH_USER_EMAILS": os.environ.get("GRAPH_USER_EMAILS"),  # New: comma-separated or "All"
+        "GRAPH_USER_EMAIL": os.environ.get("GRAPH_USER_EMAIL"),    # Legacy: single email
     }
 
     # Log environment variables for debugging
