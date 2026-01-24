@@ -42,6 +42,8 @@ build/
 test_chromadb/
 chroma
 chromadb
+data/
+.data/
 
 # Node.js
 node_modules/
