@@ -1,0 +1,193 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.cam10001110101/outlook-email",
+  "title": "Outlook Email Processor",
+  "description": "Cross-platform MCP server for Microsoft Outlook email processing with semantic search, vector embeddings via Ollama, and MongoDB storage. Supports Windows COM, macOS AppleScript, and Microsoft Graph API.",
+  "version": "0.2.0",
+  "websiteUrl": "https://github.com/cam10001110101/mcp-server-outlook-email",
+  "repository": {
+    "url": "https://github.com/cam10001110101/mcp-server-outlook-email",
+    "source": "github"
+  },
+  "license": "MIT",
+  "icon": {
+    "url": "https://mcpcentral.io/favicon.png"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-server-outlook-email",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtime": "python",
+      "runtimeArguments": [
+        "-m"
+      ],
+      "packageArguments": [
+        {
+          "type": "positional",
+          "valueHint": "src.mcp_server",
+          "description": "Module path to run the MCP server",
+          "isRequired": true
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "MONGODB_URI",
+          "description": "MongoDB connection string for storing vector embeddings (e.g., mongodb://localhost:27017/MCP?authSource=admin)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "SQLITE_DB_PATH",
+          "description": "Path to SQLite database file for email metadata storage",
+          "isRequired": true
+        },
+        {
+          "name": "COLLECTION_NAME",
+          "description": "MongoDB collection name for storing email embeddings",
+          "isRequired": true
+        },
+        {
+          "name": "EMBEDDING_BASE_URL",
+          "description": "Ollama server URL for generating embeddings",
+          "isRequired": false,
+          "default": "http://localhost:11434"
+        },
+        {
+          "name": "EMBEDDING_MODEL",
+          "description": "Ollama embedding model name to use",
+          "isRequired": false,
+          "default": "nomic-embed-text"
+        },
+        {
+          "name": "OUTLOOK_PROVIDER",
+          "description": "Email provider: 'auto' (detect platform), 'windows' (COM), 'mac' (AppleScript), or 'graph' (Microsoft Graph API)",
+          "isRequired": false,
+          "default": "auto"
+        },
+        {
+          "name": "LOCAL_TIMEZONE",
+          "description": "Timezone for date handling (e.g., 'America/Chicago', 'UTC')",
+          "isRequired": false,
+          "default": "UTC"
+        },
+        {
+          "name": "PROCESS_DELETED_ITEMS",
+          "description": "Whether to process Deleted Items folder ('true' or 'false')",
+          "isRequired": false,
+          "default": "false"
+        },
+        {
+          "name": "GRAPH_CLIENT_ID",
+          "description": "Azure AD application (client) ID - required when OUTLOOK_PROVIDER=graph",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "GRAPH_CLIENT_SECRET",
+          "description": "Azure AD client secret - required when OUTLOOK_PROVIDER=graph",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "GRAPH_TENANT_ID",
+          "description": "Azure AD tenant ID - required when OUTLOOK_PROVIDER=graph",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "GRAPH_USER_EMAILS",
+          "description": "Mailboxes to access: comma-separated emails or 'All' for auto-discovery - required when OUTLOOK_PROVIDER=graph",
+          "isRequired": false
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "process_emails",
+      "description": "Process emails from Outlook with date range filtering, store in SQLite, and generate vector embeddings"
+    },
+    {
+      "name": "search_emails",
+      "description": "Semantic search across email content using MongoDB vector store"
+    },
+    {
+      "name": "analyze_email_sentiment",
+      "description": "Analyze sentiment of emails"
+    },
+    {
+      "name": "find_actionable_items",
+      "description": "Find actionable items from emails"
+    },
+    {
+      "name": "export_email_data",
+      "description": "Export email data in CSV, JSON, HTML, or Excel format"
+    },
+    {
+      "name": "list_outlook_folders",
+      "description": "List available Outlook folders"
+    },
+    {
+      "name": "get_folder_statistics",
+      "description": "Get statistics for Outlook folders"
+    },
+    {
+      "name": "organize_emails_by_rules",
+      "description": "Organize emails based on custom rules"
+    },
+    {
+      "name": "extract_contacts",
+      "description": "Extract contacts from processed emails"
+    },
+    {
+      "name": "get_email_statistics",
+      "description": "Get overall email processing statistics"
+    },
+    {
+      "name": "check_data_consistency",
+      "description": "Verify consistency between SQLite and MongoDB data stores"
+    }
+  ],
+  "prompts": [],
+  "resources": [],
+  "isVerified": false,
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "keywords": [
+        "outlook",
+        "email",
+        "microsoft",
+        "graph-api",
+        "vector-search",
+        "embeddings",
+        "ollama",
+        "mongodb",
+        "sqlite",
+        "semantic-search",
+        "cross-platform",
+        "windows",
+        "macos"
+      ],
+      "categories": [
+        "productivity",
+        "email",
+        "search",
+        "ai"
+      ],
+      "platforms": [
+        "windows",
+        "macos",
+        "linux"
+      ],
+      "requirements": {
+        "ollama": "Required for generating vector embeddings (nomic-embed-text model)",
+        "mongodb": "Required for storing vector embeddings",
+        "outlook": "Windows: Outlook desktop app | macOS: Outlook for Mac | Graph: Azure AD app registration"
+      }
+    }
+  }
+}
