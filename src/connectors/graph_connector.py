@@ -231,9 +231,10 @@ class GraphAPIConnector(OutlookConnectorBase):
                     if "user_code" in flow:
                         logger.info(f"To sign in, visit: {flow['verification_uri']}")
                         logger.info(f"Enter code: {flow['user_code']}")
-                        print(f"\n*** AUTHENTICATION REQUIRED ***")
-                        print(f"Visit: {flow['verification_uri']}")
-                        print(f"Enter code: {flow['user_code']}\n")
+                        # stderr, never stdout: stdout is the MCP JSON-RPC channel under STDIO.
+                        print("\n*** AUTHENTICATION REQUIRED ***", file=sys.stderr)
+                        print(f"Visit: {flow['verification_uri']}", file=sys.stderr)
+                        print(f"Enter code: {flow['user_code']}\n", file=sys.stderr)
                         result = app.acquire_token_by_device_flow(flow)
                     else:
                         raise RuntimeError(f"Device flow initiation failed: {flow.get('error')}")

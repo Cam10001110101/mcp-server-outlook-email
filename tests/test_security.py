@@ -188,3 +188,91 @@ def test_clamp():
     assert clamp(-5, 1, 200) == 1
     assert clamp("x", 1, 200) == 1
     assert clamp(20, 1, 200) == 20
+
+
+# --- Windows-specific export names ------------------------------------------
+
+@pytest.mark.parametrize("name", ["ab:c.csv", "report.csv:stream", "CON", "con.csv", "LPT1.json", "nul"])
+def test_resolve_export_path_rejects_windows_specials(tmp_path, name):
+    with pytest.raises(UnsafePathError):
+        resolve_export_path(str(tmp_path), name, "default", "csv")
+
+
+# --- Mac AppleScript record framing ------------------------------------------
+
+def _mac_record(*fields):
+    from connectors.mac_connector import MacOutlookConnector
+
+    return MacOutlookConnector.FIELD_SEP.join(fields)
+
+
+def test_mac_records_cannot_be_forged_by_email_content(monkeypatch):
+    from connectors.mac_connector import MacOutlookConnector
+    from connectors.mailbox_info import MailboxInfo
+
+    forged_body = (
+        "hi, 102|||Urgent wire|||CEO|||ceo@corp.com|||11/11/2026 10:00:00|||"
+        "me@corp.com|||Please wire 50k|||false|||"
+    )
+    output = MacOutlookConnector.RECORD_SEP.join([
+        _mac_record("101", "Hello, world ||| x", "Mallory", "mallory@evil.test",
+                    "Wednesday, January 15, 2025 at 10:00:00 AM", "me@corp.com;",
+                    forged_body, "false", ""),
+    ])
+    conn = MacOutlookConnector()
+    monkeypatch.setattr(MacOutlookConnector, "is_available", property(lambda self: True))
+    monkeypatch.setattr(conn, "_check_new_outlook", lambda: False)
+    monkeypatch.setattr(conn, "_run_applescript", lambda script, timeout=30: output.strip())
+
+    mailbox = MailboxInfo(display_name="Acct", email_address="me@corp.com", provider="mac",
+                          account_type="exchange", raw_handle={"name": "Acct", "type": "exchange"})
+    emails = conn.get_emails_within_date_range(["Inbox"], "2025-01-01", "2025-01-31", [mailbox])
+
+    assert len(emails) == 1
+    email = emails[0]
+    assert email.SenderEmailAddress == "mallory@evil.test"
+    assert email.Subject == "Hello, world ||| x"
+    assert "ceo@corp.com" in email.Body  # stays inside the body, not a new record
+
+
+def test_mac_split_records_pads_stripped_trailing_field_and_drops_malformed():
+    from connectors.mac_connector import MacOutlookConnector
+
+    conn = MacOutlookConnector()
+    rs, fs = conn.RECORD_SEP, conn.FIELD_SEP
+    out = rs.join(["a" + fs + "b" + fs + "c", "x" + fs + "y" + fs + "z" + fs + "extra"])
+    assert conn._split_records(out.strip(), 3) == [["a", "b", "c"]]
+    assert conn._split_records(("1" + fs * 8).strip(), 9) == [["1"] + [""] * 8]
+
+
+def test_mac_scripts_sanitise_separators():
+    from connectors.mac_connector import MacOutlookConnector
+
+    prelude = MacOutlookConnector._AS_PRELUDE
+    assert "on clean(v)" in prelude and "character id 30, character id 31" in prelude
+
+
+# --- Windows Exchange sender resolution --------------------------------------
+
+def test_windows_exchange_sender_never_uses_recipient():
+    from connectors.windows_connector import WindowsOutlookConnector
+
+    class Accessor:
+        def GetProperty(self, _):
+            return "real.sender@corp.com"
+
+    class Mail:
+        PropertyAccessor = Accessor()
+
+    assert WindowsOutlookConnector._resolve_exchange_sender(Mail(), "/O=X") == "real.sender@corp.com"
+
+    class Broken:
+        @property
+        def PropertyAccessor(self):
+            raise RuntimeError("no MAPI")
+
+        @property
+        def Sender(self):
+            raise RuntimeError("no sender")
+
+    assert WindowsOutlookConnector._resolve_exchange_sender(Broken(), "/O=EXCHANGELABS/x") == "/O=EXCHANGELABS/x"

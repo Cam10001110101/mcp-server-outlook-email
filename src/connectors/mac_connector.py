@@ -37,7 +37,31 @@ class MacOutlookConnector(OutlookConnectorBase):
     """
 
     # AppleScript delimiter for parsing output
-    DELIMITER = "|||"
+    # Records and fields are framed with ASCII RS (30) / US (31). Both are
+    # stripped from every value inside AppleScript (see _AS_PRELUDE), so
+    # attacker-controlled subjects/bodies cannot forge extra records or fields.
+    RECORD_SEP = chr(30)
+    FIELD_SEP = chr(31)
+
+    # Prepended to scripts that return records. Handlers must be top level.
+    _AS_PRELUDE = """
+set FS to character id 31
+on clean(v)
+    set t to v as string
+    set AppleScript's text item delimiters to {character id 30, character id 31}
+    set parts to text items of t
+    set AppleScript's text item delimiters to " "
+    set t to parts as string
+    set AppleScript's text item delimiters to ""
+    return t
+end clean
+on joinRecords(lst)
+    set AppleScript's text item delimiters to character id 30
+    set t to lst as string
+    set AppleScript's text item delimiters to ""
+    return t
+end joinRecords
+"""
 
     def __init__(
         self,
@@ -69,6 +93,25 @@ class MacOutlookConnector(OutlookConnectorBase):
             return ""
         # Escape backslashes first, then quotes
         return value.replace('\\', '\\\\').replace('"', '\\"')
+
+    def _split_records(self, output: str, field_count: int) -> List[List[str]]:
+        """Split RS/US-framed AppleScript output, dropping malformed records.
+
+        Python's str.strip() treats chr(28)-chr(31) as whitespace, so trailing
+        empty fields may have been stripped by _run_applescript; pad those.
+        """
+        records = []
+        for record in output.split(self.RECORD_SEP):
+            if not record.strip("\r\n"):
+                continue
+            parts = record.strip("\r\n").split(self.FIELD_SEP)
+            if len(parts) < field_count:
+                parts += [""] * (field_count - len(parts))
+            if len(parts) != field_count or not parts[0]:
+                logger.debug(f"Skipping malformed AppleScript record ({len(parts)} fields)")
+                continue
+            records.append(parts)
+        return records
 
     @property
     def is_available(self) -> bool:
@@ -174,22 +217,22 @@ class MacOutlookConnector(OutlookConnectorBase):
         self._check_new_outlook()
 
         # First try to get accounts via traditional API
-        script = f'''
+        script = self._AS_PRELUDE + f'''
         tell application "Microsoft Outlook"
             set accountList to {{}}
             repeat with acct in exchange accounts
-                set acctInfo to (name of acct) & "{self.DELIMITER}" & (email address of acct) & "{self.DELIMITER}" & "exchange"
+                set acctInfo to my clean(name of acct) & FS & my clean(email address of acct) & FS & "exchange"
                 set end of accountList to acctInfo
             end repeat
             repeat with acct in imap accounts
-                set acctInfo to (name of acct) & "{self.DELIMITER}" & (email address of acct) & "{self.DELIMITER}" & "imap"
+                set acctInfo to my clean(name of acct) & FS & my clean(email address of acct) & FS & "imap"
                 set end of accountList to acctInfo
             end repeat
             repeat with acct in pop accounts
-                set acctInfo to (name of acct) & "{self.DELIMITER}" & (email address of acct) & "{self.DELIMITER}" & "pop"
+                set acctInfo to my clean(name of acct) & FS & my clean(email address of acct) & FS & "pop"
                 set end of accountList to acctInfo
             end repeat
-            return accountList
+            return my joinRecords(accountList)
         end tell
         '''
 
@@ -197,19 +240,14 @@ class MacOutlookConnector(OutlookConnectorBase):
         try:
             result = self._run_applescript(script)
             if result:
-                # Parse AppleScript list output
-                # Format: "name|||email|||type, name|||email|||type, ..."
-                for entry in result.split(", "):
-                    parts = entry.strip().split(self.DELIMITER)
-                    if len(parts) >= 3:
-                        mailbox = MailboxInfo(
-                            display_name=parts[0],
-                            email_address=parts[1],
-                            provider=self.provider_name,
-                            account_type=parts[2],
-                            raw_handle={"name": parts[0], "type": parts[2]}
-                        )
-                        mailboxes.append(mailbox)
+                for parts in self._split_records(result, 3):
+                    mailboxes.append(MailboxInfo(
+                        display_name=parts[0],
+                        email_address=parts[1],
+                        provider=self.provider_name,
+                        account_type=parts[2],
+                        raw_handle={"name": parts[0], "type": parts[2]}
+                    ))
         except Exception as e:
             logger.error(f"Error getting mailboxes via accounts: {e}")
 
@@ -383,7 +421,7 @@ class MacOutlookConnector(OutlookConnectorBase):
                 # Choose script based on whether we're using direct folder access
                 if direct_folders:
                     # Direct mail folder access (for New Outlook / On My Computer)
-                    script = f'''
+                    script = self._AS_PRELUDE + f'''
                     tell application "Microsoft Outlook"
                         set emailList to {{}}
 
@@ -397,47 +435,47 @@ class MacOutlookConnector(OutlookConnectorBase):
                                         try
                                             set msgDate to time received of msg
 
-                                            set msgData to (id of msg as string) & "{self.DELIMITER}"
-                                            set msgData to msgData & (subject of msg as string) & "{self.DELIMITER}"
+                                            set msgData to my clean(id of msg) & FS
+                                            set msgData to msgData & my clean(subject of msg) & FS
 
                                             -- Handle sender safely
                                             try
-                                                set msgData to msgData & (name of sender of msg as string) & "{self.DELIMITER}"
-                                                set msgData to msgData & (address of sender of msg as string) & "{self.DELIMITER}"
+                                                set msgData to msgData & my clean(name of sender of msg) & FS
+                                                set msgData to msgData & my clean(address of sender of msg) & FS
                                             on error
-                                                set msgData to msgData & "Unknown{self.DELIMITER}unknown@local{self.DELIMITER}"
+                                                set msgData to msgData & "Unknown" & FS & "unknown@local" & FS
                                             end try
 
-                                            set msgData to msgData & (msgDate as string) & "{self.DELIMITER}"
+                                            set msgData to msgData & my clean(msgDate) & FS
 
                                             -- Get recipients
                                             set recipList to ""
                                             try
                                                 repeat with recip in to recipients of msg
-                                                    set recipList to recipList & (address of recip) & ";"
+                                                    set recipList to recipList & my clean(address of recip) & ";"
                                                 end repeat
                                             end try
-                                            set msgData to msgData & recipList & "{self.DELIMITER}"
+                                            set msgData to msgData & recipList & FS
 
                                             -- Get plain text content
                                             try
-                                                set msgData to msgData & (plain text content of msg as string) & "{self.DELIMITER}"
+                                                set msgData to msgData & my clean(plain text content of msg) & FS
                                             on error
-                                                set msgData to msgData & "{self.DELIMITER}"
+                                                set msgData to msgData & FS
                                             end try
 
                                             -- Check if unread
                                             try
-                                                set msgData to msgData & (is read of msg as string) & "{self.DELIMITER}"
+                                                set msgData to msgData & my clean(is read of msg) & FS
                                             on error
-                                                set msgData to msgData & "true{self.DELIMITER}"
+                                                set msgData to msgData & "true" & FS
                                             end try
 
                                             -- Get categories
                                             set catList to ""
                                             try
                                                 repeat with cat in categories of msg
-                                                    set catList to catList & (name of cat) & ";"
+                                                    set catList to catList & my clean(name of cat) & ";"
                                                 end repeat
                                             end try
                                             set msgData to msgData & catList
@@ -458,12 +496,12 @@ class MacOutlookConnector(OutlookConnectorBase):
                             end if
                         end repeat
 
-                        return emailList
+                        return my joinRecords(emailList)
                     end tell
                     '''
                 else:
                     # Traditional account-based access
-                    script = f'''
+                    script = self._AS_PRELUDE + f'''
                     tell application "Microsoft Outlook"
                         set emailList to {{}}
 
@@ -495,30 +533,30 @@ class MacOutlookConnector(OutlookConnectorBase):
                                         set msgDate to time received of msg
 
                                         -- Basic date filtering (AppleScript date comparison)
-                                        set msgData to (id of msg as string) & "{self.DELIMITER}"
-                                        set msgData to msgData & (subject of msg as string) & "{self.DELIMITER}"
-                                        set msgData to msgData & (name of sender of msg as string) & "{self.DELIMITER}"
-                                        set msgData to msgData & (address of sender of msg as string) & "{self.DELIMITER}"
-                                        set msgData to msgData & (msgDate as string) & "{self.DELIMITER}"
+                                        set msgData to my clean(id of msg) & FS
+                                        set msgData to msgData & my clean(subject of msg) & FS
+                                        set msgData to msgData & my clean(name of sender of msg) & FS
+                                        set msgData to msgData & my clean(address of sender of msg) & FS
+                                        set msgData to msgData & my clean(msgDate) & FS
 
                                         -- Get recipients
                                         set recipList to ""
                                         repeat with recip in to recipients of msg
-                                            set recipList to recipList & (address of recip) & ";"
+                                            set recipList to recipList & my clean(address of recip) & ";"
                                         end repeat
-                                        set msgData to msgData & recipList & "{self.DELIMITER}"
+                                        set msgData to msgData & recipList & FS
 
                                         -- Get plain text content
-                                        set msgData to msgData & (plain text content of msg as string) & "{self.DELIMITER}"
+                                        set msgData to msgData & my clean(plain text content of msg) & FS
 
                                         -- Check if unread
-                                        set msgData to msgData & (is read of msg as string) & "{self.DELIMITER}"
+                                        set msgData to msgData & my clean(is read of msg) & FS
 
                                         -- Get categories
                                         set catList to ""
                                         try
                                             repeat with cat in categories of msg
-                                                set catList to catList & (name of cat) & ";"
+                                                set catList to catList & my clean(name of cat) & ";"
                                             end repeat
                                         end try
                                         set msgData to msgData & catList
@@ -538,27 +576,16 @@ class MacOutlookConnector(OutlookConnectorBase):
                             end try
                         end if
 
-                        return emailList
+                        return my joinRecords(emailList)
                     end tell
                     '''
 
                 try:
                     result = self._run_applescript(script, timeout=120)
                     if result:
-                        # Parse the result
-                        for entry in result.split(", "):
-                            entry = entry.strip()
-                            if not entry:
-                                continue
-
-                            # Split with maxsplit to handle bodies containing delimiter
-                            # Fields: id, subject, sender_name, sender_email, date, recipients, body, is_read, categories
-                            # We split into max 9 parts; if body contains "|||", extra parts go to categories
-                            parts = entry.split(self.DELIMITER, maxsplit=8)
-                            if len(parts) < 7:
-                                logger.debug(f"Skipping entry with insufficient fields: {len(parts)}")
-                                continue
-
+                        # Fields: id, subject, sender_name, sender_email, date,
+                        # recipients, body, is_read, categories
+                        for parts in self._split_records(result, 9):
                             try:
                                 # Parse date and check range
                                 received_time = self._parse_applescript_date(parts[4])

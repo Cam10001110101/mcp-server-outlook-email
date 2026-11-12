@@ -19,6 +19,12 @@ _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 # Only Microsoft Graph may receive our Graph bearer token.
 TRUSTED_GRAPH_HOSTS = frozenset({"graph.microsoft.com"})
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
 _URI_CREDENTIALS_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/\s@]+@")
 
 
@@ -49,13 +55,16 @@ def resolve_export_path(export_dir: str, requested_name: Optional[str], default_
         os.path.isabs(name)
         or "/" in name
         or "\\" in name
-        or (len(name) >= 2 and name[1] == ":")
+        or ":" in name  # drive letters and NTFS alternate data streams
         or name in (".", "..")
         or "\x00" in name
     ):
         raise UnsafePathError(
             "output_path must be a bare file name; exports are always written to the exports directory"
         )
+
+    if name.split(".")[0].strip().upper() in _WINDOWS_RESERVED_NAMES:
+        raise UnsafePathError("Reserved device name is not allowed as an export file name")
 
     stem, ext = os.path.splitext(name)
     if ext.lower() != f".{extension}":

@@ -234,6 +234,24 @@ class WindowsOutlookConnector(OutlookConnectorBase):
         except Exception:
             raise
 
+    @staticmethod
+    def _resolve_exchange_sender(email, fallback: str) -> str:
+        """Return the SMTP address of an Exchange (X.500 / EX) sender."""
+        PR_SENDER_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x5D01001F"
+        try:
+            smtp = email.PropertyAccessor.GetProperty(PR_SENDER_SMTP_ADDRESS)
+            if smtp:
+                return smtp
+        except Exception:
+            pass
+        try:
+            user = email.Sender.GetExchangeUser()
+            if user is not None and user.PrimarySmtpAddress:
+                return user.PrimarySmtpAddress
+        except Exception:
+            pass
+        return fallback
+
     def get_emails_within_date_range(
         self,
         folder_names: List[str],
@@ -320,12 +338,9 @@ class WindowsOutlookConnector(OutlookConnectorBase):
                                     # Get sender email
                                     sender_email = getattr(email, 'SenderEmailAddress', '')
                                     if '/O=EXCHANGELABS/' in sender_email.upper():
-                                        if hasattr(email, 'Recipients'):
-                                            for j in range(1, email.Recipients.Count + 1):
-                                                recipient = email.Recipients.Item(j)
-                                                if hasattr(recipient, 'Type') and recipient.Type == 1:
-                                                    sender_email = getattr(recipient, 'Address', sender_email)
-                                                    break
+                                        # Resolve the *sender's* SMTP address. (Never fall back to a
+                                        # recipient: that would attribute mail to the wrong person.)
+                                        sender_email = self._resolve_exchange_sender(email, sender_email)
 
                                     # Get attachments
                                     attachments = []
