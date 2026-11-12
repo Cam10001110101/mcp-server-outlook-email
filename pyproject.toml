@@ -14,7 +14,7 @@ dependencies = [
     "langchain-ollama",
     "langchain-mongodb",
     "pymongo",
-    "mcp[cli]",
+    "mcp[cli]>=1.12,<2",  # 2.x renamed FastMCP; >=1.12 for TransportSecuritySettings
     "pydantic",
     "pytz",
 ]
@@ -62,4 +62,5 @@ ignore = ["E501"]  # Line too long - handled by formatter
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
