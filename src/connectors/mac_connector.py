@@ -322,13 +322,20 @@ class MacOutlookConnector(OutlookConnectorBase):
             return dt
 
     def _get_folder_script_name(self, folder_name: str, account_type: str) -> str:
-        """Get the AppleScript folder name for a given folder."""
+        """Get the AppleScript folder name for a given folder.
+
+        The result is interpolated into AppleScript as a bare identifier (not a
+        quoted string), so only a fixed whitelist is allowed. Anything else
+        would let a crafted folder name inject AppleScript (e.g. `do shell script`).
+        """
         folder_map = {
             "Inbox": "inbox",
             "Sent Items": "sent items",
             "Deleted Items": "deleted items",
         }
-        return folder_map.get(folder_name, folder_name.lower())
+        if folder_name not in folder_map:
+            raise ValueError(f"Unsupported folder for Mac Outlook: {folder_name!r}")
+        return folder_map[folder_name]
 
     def get_emails_within_date_range(
         self,
@@ -363,7 +370,11 @@ class MacOutlookConnector(OutlookConnectorBase):
                 if folder_name == "Deleted Items" and not self.process_deleted_items:
                     continue
 
-                folder_script_name = self._get_folder_script_name(folder_name, account_type)
+                try:
+                    folder_script_name = self._get_folder_script_name(folder_name, account_type)
+                except ValueError as e:
+                    logger.warning(str(e))
+                    continue
 
                 # Escape names for safe AppleScript interpolation
                 safe_folder_name = self._escape_applescript(folder_name)
