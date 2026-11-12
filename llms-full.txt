@@ -1,3 +1,8 @@
+Historical upstream documentation snapshot (includes MCP 2025 examples).
+For this project, use docs/mcp-2026-07-28.md and the current target specification:
+https://modelcontextprotocol.io/specification/2026-07-28
+The examples below are reference material, not this server's implementation contract.
+
 # Build an MCP client
 Source: https://modelcontextprotocol.io/docs/develop/build-client
 

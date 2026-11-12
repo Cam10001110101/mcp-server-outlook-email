@@ -21,7 +21,11 @@ logger = logging.getLogger('outlook-email.mcp_server')
 # Environment variables are set by the MCP config file
 
 from datetime import datetime
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server import CacheHint
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ResourceError
+from mcp.shared.exceptions import MCPError
+from protocol_support import OutlookMCPServer, local_http_security, mark_tool_failures
 from MongoDBHandler import MongoDBHandler
 from SQLiteHandler import SQLiteHandler
 from connectors import create_connector, get_available_providers
@@ -33,20 +37,21 @@ from security_utils import UnsafePathError, clamp, redact_uri
 
 MAX_SEARCH_RESULTS = 200
 
-# Initialize FastMCP server with dependencies and 2025-06-18 configuration
-mcp = FastMCP(
+# The official SDK implements both native 2026-07-28 and legacy protocol versions.
+# Email data is private and immediately stale; no result may cross user contexts.
+mcp = OutlookMCPServer(
     "outlook-email",
-    dependencies=[
-        "pymongo",
-        "langchain",
-        "langchain_ollama",
-        "pytz"
-    ]
+    version="0.2.0",
+    cache_hints={
+        method: CacheHint(ttl_ms=0, scope="private")
+        for method in (
+            "tools/list", "prompts/list", "resources/list",
+            "resources/templates/list", "resources/read",
+        )
+    },
+    subscriptions=False,
+    middleware=[mark_tool_failures],
 )
-
-# Configure server for 2025-06-18 protocol specification
-# Note: Protocol version must be declared during initialization handshake
-# The FastMCP framework will handle the protocol version negotiation
 
 class ProcessEmailsResult(BaseModel):
     """Structured result for process_emails tool"""
@@ -437,7 +442,7 @@ class EmailProcessor:
                 raise ValueError("Date range cannot exceed 30 days")
 
             # Get mailboxes
-            await ctx.report_progress(0, "Initializing email processing")
+            await ctx.report_progress(0, total=100, message="Initializing email processing")
             
             if "All" in mailboxes:
                 outlook_mailboxes = self.outlook.get_mailboxes()
@@ -464,7 +469,7 @@ class EmailProcessor:
             if self.outlook.process_deleted_items:
                 folder_names.append("Deleted Items")
                 
-            await ctx.report_progress(10, f"Retrieving emails from {', '.join(folder_names)}")
+            await ctx.report_progress(10, total=100, message=f"Retrieving emails from {', '.join(folder_names)}")
             
             all_emails = []
             failed_mailboxes = []
@@ -480,8 +485,8 @@ class EmailProcessor:
                     if emails:
                         all_emails.extend(emails)
 
-                    progress = 10 + (40 * (i + 1) / len(outlook_mailboxes))
-                    await ctx.report_progress(progress, f"Processing mailbox {i+1}/{len(outlook_mailboxes)}")
+                    progress = 10 + (35 * (i + 1) / len(outlook_mailboxes))
+                    await ctx.report_progress(progress, total=100, message=f"Processing mailbox {i+1}/{len(outlook_mailboxes)}")
                 except Exception as e:
                     mailbox_name = getattr(mailbox, 'display_name', str(mailbox))
                     logger.error(f"Failed to process mailbox '{mailbox_name}': {e}")
@@ -502,14 +507,14 @@ class EmailProcessor:
                     error="No emails found in any mailbox"
                 )
             
-            await ctx.report_progress(50, "Storing emails in SQLite")
+            await ctx.report_progress(50, total=100, message="Storing emails in SQLite")
             
             total_stored = 0
             for i, email in enumerate(all_emails):
                 if self.sqlite.add_or_update_email(email):
                     total_stored += 1
-                progress = 50 + (20 * (i + 1) / len(all_emails))
-                await ctx.report_progress(progress, f"Storing email {i+1}/{len(all_emails)}")
+                progress = 50 + (15 * (i + 1) / len(all_emails))
+                await ctx.report_progress(progress, total=100, message=f"Storing email {i+1}/{len(all_emails)}")
             
             if total_stored == 0:
                 return ProcessEmailsResult(
@@ -523,14 +528,14 @@ class EmailProcessor:
                 )
             
             # Get unprocessed emails with limit
-            await ctx.report_progress(70, "Fetching unprocessed emails")
+            await ctx.report_progress(70, total=100, message="Fetching unprocessed emails")
 
             # Apply limit if specified
             limit = max_to_process if max_to_process else 10000  # Default max
             unprocessed = self.sqlite.get_unprocessed_emails(limit=limit)
             email_dicts = [email for email in unprocessed]
 
-            await ctx.report_progress(75, f"Found {len(email_dicts)} unprocessed emails")
+            await ctx.report_progress(75, total=100, message=f"Found {len(email_dicts)} unprocessed emails")
 
             if not email_dicts:
                 return ProcessEmailsResult(
@@ -548,10 +553,10 @@ class EmailProcessor:
 
             for i in range(0, len(email_dicts), batch_size):
                 batch = email_dicts[i:i+batch_size]
-                progress = 75 + (15 * (i + len(batch)) / len(email_dicts))
+                progress = 75 + (10 * (i + len(batch)) / len(email_dicts))
                 await ctx.report_progress(
-                    progress,
-                    f"Processing batch {i//batch_size + 1} ({len(batch)} emails)"
+                    progress, total=100,
+                    message=f"Processing batch {i//batch_size + 1} ({len(batch)} emails)"
                 )
 
                 # Process batch
@@ -567,7 +572,7 @@ class EmailProcessor:
                 if max_to_process and total_processed >= max_to_process:
                     break
 
-            await ctx.report_progress(90, "Finalizing processing")
+            await ctx.report_progress(90, total=100, message="Finalizing processing")
             
             result = ProcessEmailsResult(
                 success=True,
@@ -579,7 +584,7 @@ class EmailProcessor:
                         f"(retrieved: {len(all_emails)}, stored: {total_stored}, "
                         f"failed: {total_failed})")
             )
-            await ctx.report_progress(100, "Processing complete")
+            await ctx.report_progress(100, total=100, message="Processing complete")
             return result
             
         except Exception as e:
@@ -596,7 +601,7 @@ class EmailProcessor:
         # Note: We don't close connections here because they might be needed for future operations
         # Connections will be closed by the atexit handler when the server shuts down
 
-try:
+def create_processor() -> EmailProcessor:
     # Load configuration from environment
     config = {
         "MONGODB_URI": os.environ.get("MONGODB_URI"),
@@ -663,8 +668,18 @@ try:
     else:
         logging.warning("⚠ Server started with warnings - some features may not work")
     
-except Exception as e:
-    raise
+    return processor
+
+processor: Optional[EmailProcessor] = None
+
+
+def get_processor() -> EmailProcessor:
+    """Initialize mailbox services on first use, leaving discovery side-effect free."""
+    global processor
+    if processor is None:
+        processor = create_processor()
+    return processor
+
 
 # Register cleanup handler for server shutdown
 import atexit
@@ -672,7 +687,7 @@ import atexit
 def cleanup_resources():
     """Clean up resources when the server shuts down."""
     try:
-        if 'processor' in globals():
+        if processor is not None:
             # Close SQLite connection
             if hasattr(processor, 'sqlite'):
                 processor.sqlite.close()
@@ -726,7 +741,7 @@ async def process_emails(
                 error="Invalid date format"
             )
 
-        result = await processor.process_emails(start_date, end_date, mailboxes, batch_size, max_to_process, ctx)
+        result = await get_processor().process_emails(start_date, end_date, mailboxes, batch_size, max_to_process, ctx)
         return result
     except Exception as e:
         return ProcessEmailsResult(
@@ -794,10 +809,10 @@ async def search_emails(
                 )
 
         # Choose search method
-        if use_semantic and processor.vector_search:
+        if use_semantic and get_processor().vector_search:
             try:
                 # Perform vector search with metadata filters
-                results_with_scores = processor.vector_search.similarity_search_with_filters(
+                results_with_scores = get_processor().vector_search.similarity_search_with_filters(
                     query=query,
                     k=limit,
                     date_from=date_from,
@@ -814,7 +829,7 @@ async def search_emails(
 
                     # Get email ID to fetch full details from SQLite
                     email_id = metadata.get('id', '')
-                    email_data = processor.sqlite.get_email_by_id(email_id)
+                    email_data = get_processor().sqlite.get_email_by_id(email_id)
 
                     if email_data:
                         email = EmailItem(
@@ -858,7 +873,7 @@ async def search_emails(
             if folder:
                 filters['folder'] = folder
 
-            search_results = processor.sqlite.search_emails(
+            search_results = get_processor().sqlite.search_emails(
                 query_text=query,
                 filters=filters,
                 limit=limit
@@ -929,7 +944,7 @@ async def get_email_statistics(
                 raise ValueError("Invalid date_to format. Use YYYY-MM-DD")
         
         # Get statistics from SQLite database
-        stats = processor.sqlite.get_email_statistics(
+        stats = get_processor().sqlite.get_email_statistics(
             date_from=date_from,
             date_to=date_to
         )
@@ -996,7 +1011,7 @@ async def extract_contacts(
                 )
         
         # Extract contacts from database
-        contacts_data = processor.sqlite.extract_contacts(
+        contacts_data = get_processor().sqlite.extract_contacts(
             date_from=date_from,
             date_to=date_to,
             min_interactions=min_interactions
@@ -1079,7 +1094,7 @@ async def analyze_email_sentiment(
         if folder_filter:
             filters['folder'] = folder_filter
         
-        emails = processor.sqlite.get_emails_for_analysis(filters)
+        emails = get_processor().sqlite.get_emails_for_analysis(filters)
         
         if not emails:
             return SentimentAnalysisResult(
@@ -1204,7 +1219,7 @@ async def export_email_data(
         if date_to:
             filters['date_to'] = date_to
         
-        emails = processor.sqlite.get_emails_for_export(filters)
+        emails = get_processor().sqlite.get_emails_for_export(filters)
         
         if not emails:
             return ExportResult(
@@ -1218,7 +1233,7 @@ async def export_email_data(
         
         # Exports are confined to <db dir>/exports; output_path may only name the file.
         export_dir = os.path.join(
-            os.path.dirname(os.path.abspath(processor.sqlite.db_path)), "exports"
+            os.path.dirname(os.path.abspath(get_processor().sqlite.db_path)), "exports"
         )
         try:
             file_path, file_size = write_email_export(
@@ -1276,7 +1291,7 @@ async def find_actionable_items(
         if sender_filter:
             filters['sender'] = sender_filter
         
-        emails = processor.sqlite.get_emails_for_analysis(filters)
+        emails = get_processor().sqlite.get_emails_for_analysis(filters)
         
         if not emails:
             return ActionItemsResult(
@@ -1388,12 +1403,12 @@ async def list_outlook_folders(ctx: Context = None) -> FolderManagementResult:
         folders_info = []
         
         # Get folder statistics from database
-        folder_stats = processor.sqlite.get_basic_statistics().get('folder_distribution', {})
+        folder_stats = get_processor().sqlite.get_basic_statistics().get('folder_distribution', {})
         
         # Create FolderInfo objects for each folder found in the database
         for folder_name, item_count in folder_stats.items():
             # Get unread count for this folder
-            cursor = processor.sqlite.conn.cursor()
+            cursor = get_processor().sqlite.conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM emails WHERE folder = ? AND unread = 1", (folder_name,))
             unread_count = cursor.fetchone()[0]
             
@@ -1444,7 +1459,7 @@ async def get_folder_statistics(
     """
     try:
         # Get emails from the specified folder
-        emails = processor.sqlite.get_emails_by_folder(folder_name)
+        emails = get_processor().sqlite.get_emails_by_folder(folder_name)
         
         if not emails:
             return {
@@ -1540,7 +1555,7 @@ async def organize_emails_by_rules(
             'date_from': start_date.isoformat(),
             'date_to': end_date.isoformat()
         }
-        emails = processor.sqlite.get_emails_for_export(filters)
+        emails = get_processor().sqlite.get_emails_for_export(filters)
         
         # Simulate organization based on rules
         organization_plan = {}
@@ -1626,11 +1641,11 @@ async def check_data_consistency(ctx: Context = None) -> ConsistencyReportResult
     """
     try:
         # Get SQLite consistency report
-        sqlite_report = processor.sqlite.get_consistency_report()
+        sqlite_report = get_processor().sqlite.get_consistency_report()
 
         # Verify embeddings consistency
-        consistency = processor.sqlite.verify_processed_emails_have_embeddings(
-            processor.embedding_processor.mongodb_handler
+        consistency = get_processor().sqlite.verify_processed_emails_have_embeddings(
+            get_processor().embedding_processor.mongodb_handler
         )
 
         # Generate recommendations
@@ -1682,8 +1697,12 @@ async def get_recent_emails(days: str) -> str:
     """
     try:
         days_int = int(days)
-        if days_int <= 0 or days_int > 365:
-            return "Error: Days must be between 1 and 365"
+    except ValueError as e:
+        raise MCPError(-32602, "Days must be a valid number") from e
+    if days_int <= 0 or days_int > 365:
+        raise MCPError(-32602, "Days must be between 1 and 365")
+
+    try:
         
         # Calculate date range
         from datetime import datetime, timedelta
@@ -1691,7 +1710,7 @@ async def get_recent_emails(days: str) -> str:
         start_date = end_date - timedelta(days=days_int)
         
         # Get emails from SQLite
-        emails = processor.sqlite.get_emails_in_range(
+        emails = get_processor().sqlite.get_emails_in_range(
             start_date.isoformat()[:10],
             end_date.isoformat()[:10]
         )
@@ -1715,10 +1734,8 @@ async def get_recent_emails(days: str) -> str:
         
         return result
         
-    except ValueError:
-        return "Error: Days must be a valid number"
     except Exception as e:
-        return f"Error retrieving recent emails: {str(e)}"
+        raise ResourceError("Unable to retrieve recent emails") from e
 
 @mcp.resource("email://folder/{folder_name}", title="Folder Contents")
 async def get_folder_contents(folder_name: str) -> str:
@@ -1733,7 +1750,7 @@ async def get_folder_contents(folder_name: str) -> str:
         folder_name = urllib.parse.unquote(folder_name)
         
         # Get folder contents from SQLite
-        emails = processor.sqlite.get_emails_by_folder(folder_name)
+        emails = get_processor().sqlite.get_emails_by_folder(folder_name)
         
         result = f"Contents of folder '{folder_name}' ({len(emails)} emails):\n\n"
         
@@ -1760,14 +1777,14 @@ async def get_folder_contents(folder_name: str) -> str:
         return result
         
     except Exception as e:
-        return f"Error retrieving folder contents: {str(e)}"
+        raise ResourceError("Unable to retrieve folder contents") from e
 
 @mcp.resource("email://statistics/summary", title="Email Statistics Summary")
 async def get_statistics_summary() -> str:
     """Get a summary of email statistics and activity."""
     try:
         # Get basic statistics
-        stats = processor.sqlite.get_basic_statistics()
+        stats = get_processor().sqlite.get_basic_statistics()
         
         result = "📊 Email Statistics Summary\n"
         result += "=" * 30 + "\n\n"
@@ -1803,7 +1820,7 @@ async def get_statistics_summary() -> str:
         return result
         
     except Exception as e:
-        return f"Error retrieving statistics: {str(e)}"
+        raise ResourceError("Unable to retrieve statistics") from e
 
 @mcp.resource("email://contact/{email_address}", title="Contact Interaction History")
 async def get_contact_history(email_address: str) -> str:
@@ -1818,7 +1835,7 @@ async def get_contact_history(email_address: str) -> str:
         email_address = urllib.parse.unquote(email_address)
         
         # Get interaction history
-        interactions = processor.sqlite.get_contact_interactions(email_address)
+        interactions = get_processor().sqlite.get_contact_interactions(email_address)
         
         if not interactions:
             return f"No interactions found with {email_address}"
@@ -1848,7 +1865,7 @@ async def get_contact_history(email_address: str) -> str:
         return result
         
     except Exception as e:
-        return f"Error retrieving contact history: {str(e)}"
+        raise ResourceError("Unable to retrieve contact history") from e
 
 # Prompts for common email workflows
 @mcp.prompt(title="Email Analysis")
@@ -2081,25 +2098,20 @@ Provide a detailed sentiment report with:
 - Actionable insights for improving communication
 - Risk mitigation suggestions where applicable"""
 
-if __name__ == "__main__":
-    # Run the server with support for both STDIO and HTTP transports
-    # Protocol version 2025-06-18 requires explicit version handling
-    import sys
-    
-    # Check if HTTP transport is requested
-    transport = "stdio"  # default
-    if len(sys.argv) > 1 and sys.argv[1] == "--http":
-        transport = "streamable-http"
-        # For HTTP transport, configure headers for 2025-06-18 spec
-        mcp.settings.host = "127.0.0.1"
-        mcp.settings.port = 8000
-        mcp.settings.mount_path = "/mcp"
-        # Reject DNS-rebinding / cross-origin requests from web pages in the browser.
-        from mcp.server.transport_security import TransportSecuritySettings
-        mcp.settings.transport_security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=["127.0.0.1:8000", "localhost:8000"],
-            allowed_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+def main():
+    """Run stdio by default or a loopback-only Streamable HTTP endpoint."""
+    if "--http" in sys.argv[1:]:
+        mcp.run(
+            transport="streamable-http",
+            host="127.0.0.1",
+            port=8000,
+            streamable_http_path="/mcp",
+            stateless_http=True,
+            transport_security=local_http_security(),
         )
-        
-    mcp.run(transport=transport)
+    else:
+        mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

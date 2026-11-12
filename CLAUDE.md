@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an MCP (Model Context Protocol) server that processes Outlook emails, generates embeddings using Ollama, and provides semantic search capabilities. It's designed to be used with Claude Desktop and complies with the **MCP 2025-06-18 specification**.
+This is an MCP (Model Context Protocol) server that processes Outlook emails, generates embeddings using Ollama, and provides semantic search capabilities. It's designed to be used with Claude Desktop and complies with the **MCP 2026-07-28 specification**.
 
 **Cross-Platform Support**: The server supports Windows, macOS, and any platform via Microsoft Graph API through a provider-based connector architecture.
 
 ## Development Setup
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - Ollama running locally with `nomic-embed-text` model
 - Microsoft Outlook installed (Windows/Mac) OR Azure AD app for Graph API
 - MongoDB server running locally or accessible via network
@@ -93,7 +93,7 @@ The server is configured via environment variables (typically set in Claude Desk
 2. **Primary Storage**: Emails stored in SQLite (`SQLiteHandler`) for fast filtering and full-text search
 3. **Embedding Generation**: `EmbeddingProcessor` creates embeddings via Ollama's nomic-embed-text
 4. **Vector Storage**: Embeddings stored in MongoDB (`MongoDBHandler`) for semantic search
-5. **MCP Interface**: `mcp_server.py` exposes tools via FastMCP framework
+5. **MCP Interface**: `mcp_server.py` exposes tools via official MCPServer framework
 
 ### Provider-Based Connector Architecture
 
@@ -174,11 +174,12 @@ This design allows combining semantic search (MongoDB) with structured filtering
 - Processes emails in batches (default: 4 at a time)
 
 **`mcp_server.py`** (`src/mcp_server.py`):
-- Main MCP server using FastMCP framework
-- Declares protocol version "2025-06-18" during handshake
+- Main MCP server using official MCPServer framework
+- Uses native `server/discover` and per-request version/capability metadata
 - All tools return structured Pydantic models (not plain dicts/strings)
 - Supports both STDIO and HTTP transports
-- Implements 15+ MCP tools, 4 resources, and 5 prompts
+- Implements 11 MCP tools, one static resource, three resource templates, and five prompts
+- Initializes mailbox services lazily through `get_processor()`; discovery and catalogs need no credentials
 
 ### MCP Tools Structure
 
@@ -363,8 +364,9 @@ src/
 }
 ```
 
-### MCP 2025-06-18 Compliance
-- Protocol version declared during handshake
+### MCP 2026-07-28 Support
+- Native stateless discovery; legacy initialization retained by the SDK
+- See `docs/mcp-2026-07-28.md` and `tests/test_mcp_protocol.py` for coverage
 - All tools return typed Pydantic models (e.g., `ProcessEmailsResult`, `SearchEmailsResult`)
 - HTTP transport supports Streamable HTTP with header validation
 - No batch JSON-RPC requests (per spec)
@@ -383,7 +385,7 @@ src/
 - All dates must be in ISO format (YYYY-MM-DD)
 
 ### Database Schema Changes
-**Warning**: The SQLite `_create_tables()` method currently does `DROP TABLE IF EXISTS emails` on initialization. This means all data is lost when the server restarts. This appears to be for development purposes.
+SQLite `_create_tables()` preserves existing tables and verifies indexes. Do not introduce destructive initialization when changing the schema.
 
 ## Common Patterns
 
@@ -455,7 +457,7 @@ However, in production the handlers are kept open (not used as context managers)
 ## Known Limitations
 
 1. Maximum 30-day processing range
-2. SQLite table dropped on server restart (development mode)
+2. Database schema changes require explicit migration planning
 3. No actual LLM analysis (only keyword-based sentiment/action detection)
 4. Semantic search not fully implemented (tool exists but may fall back to SQL search)
 5. Deleted Items processing requires explicit configuration

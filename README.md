@@ -4,7 +4,7 @@
 
 A cross-platform MCP server that processes Microsoft Outlook emails, generates vector embeddings using Ollama, and provides semantic search capabilities. Works on **Windows**, **macOS**, and **any platform via Microsoft Graph API**.
 
-The server complies with the **Model Context Protocol (MCP) 2025-06-18 specification** and uses the official MCP SDK.
+The server targets **Model Context Protocol (MCP) 2026-07-28** using the official Python SDK 2.3. See the [protocol coverage and verification](docs/mcp-2026-07-28.md).
 
 ## Features
 
@@ -21,10 +21,10 @@ The server complies with the **Model Context Protocol (MCP) 2025-06-18 specifica
 - **macOS**: AppleScript integration with Outlook for Mac
 - **Any Platform**: Microsoft Graph API for cloud-based access (Windows, macOS, Linux, containers)
 
-### MCP 2025-06-18 Compliance
+### MCP 2026-07-28 Support
 - **Structured Tool Results**: Tools return properly typed, validated Pydantic models
 - **HTTP Transport**: Supports both STDIO and HTTP (Streamable HTTP) transports
-- **Protocol Negotiation**: Declares protocol version during handshake
+- **Discovery**: Supports `server/discover` and independent requests with version/capability metadata
 - **Enhanced Metadata**: Tool titles and descriptions for better UI integration
 
 ### Available Tools (12+)
@@ -40,7 +40,7 @@ The server complies with the **Model Context Protocol (MCP) 2025-06-18 specifica
 ## Prerequisites
 
 ### Required (All Platforms)
-- Python 3.10 or higher
+- Python 3.11 or higher
 - Ollama running locally with `nomic-embed-text` model
 - MongoDB server (for storing embeddings)
 
@@ -248,21 +248,24 @@ When `OUTLOOK_PROVIDER` is set to `auto` (default), the server automatically sel
 | macOS | `mac` (AppleScript) |
 | Linux/Other | `graph` (requires Azure AD setup) |
 
-### HTTP Transport (2025-06-18 Compliant)
+### HTTP Transport
 
-For HTTP transport, run the server with the `--http` flag:
+For the local Streamable HTTP endpoint, run:
 
 ```bash
 python src/mcp_server.py --http
 ```
 
-This will start the server at `http://localhost:8000/mcp` with full 2025-06-18 protocol compliance including:
-- Protocol version negotiation
-- Structured output schemas
-- HTTP header validation
-- Proper error handling
+The server binds to `http://127.0.0.1:8000/mcp`. July 2026 requests use
+`MCP-Protocol-Version`, `Mcp-Method`, and (for calls/reads) `Mcp-Name` headers,
+with matching per-request `_meta` fields. Requests need no initialization or
+session ID. Invalid Host and Origin headers are rejected. This local endpoint
+has no authentication; use stdio for normal desktop integration and do not
+expose HTTP to a network or reverse proxy without an authenticated deployment.
 
-The HTTP transport supports both stateful and stateless operation modes.
+Discovery, tool/resource lists and prompts work before mailbox configuration is
+available. Database and Outlook services initialize on the first data operation;
+configuration and connection failures are reported by that operation.
 
 ---
 
@@ -361,22 +364,16 @@ The server implements proper resource management to prevent issues:
 - Connection management is designed to balance resource usage with operational reliability
 - Robust retry logic for external services like Ollama to handle temporary connection issues
 
-## MCP 2025-06-18 Compliance
+## MCP 2026-07-28 Support
 
-This server has been upgraded to comply with the MCP 2025-06-18 specification:
+The server implements stateless discovery, per-request version and capability
+metadata, complete results, private cache hints, typed tool results, and
+request-scoped progress. It exposes 11 tools, one static resource, three resource
+templates and five prompts. Legacy stdio clients can still initialize through
+the SDK compatibility path.
 
-### Protocol Features
-- **Protocol Version**: Declares `protocolVersion: "2025-06-18"` during handshake
-- **Structured Output**: All tools return typed, validated Pydantic models
-- **HTTP Transport**: Supports Streamable HTTP with proper header validation
-- **Tool Metadata**: Enhanced tool descriptions with titles and schemas
-- **Error Handling**: Structured error responses with detailed information
-
-### Transport Support
-- **STDIO**: Traditional stdin/stdout communication (default)
-- **HTTP**: Streamable HTTP on localhost:8000/mcp with header validation
-- **Protocol Headers**: Validates MCP-Protocol-Version and Origin headers
-- **Single-Message JSON-RPC**: No batch request support per 2025-06-18 spec
+[Protocol coverage](docs/mcp-2026-07-28.md) documents the implemented capabilities,
+wire-level regression tests, optional features, and deployment boundaries.
 
 ### Structured Output
 The `process_emails` tool returns a structured `ProcessEmailsResult` with:
