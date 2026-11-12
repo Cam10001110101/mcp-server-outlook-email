@@ -28,6 +28,10 @@ from connectors import create_connector, get_available_providers
 from EmailMetadata import EmailMetadata
 from langchain_ollama import OllamaEmbeddings
 from debug_utils import dump_email_debug
+from exporters import write_email_export
+from security_utils import UnsafePathError, clamp, redact_uri
+
+MAX_SEARCH_RESULTS = 200
 
 # Initialize FastMCP server with dependencies and 2025-06-18 configuration
 mcp = FastMCP(
@@ -618,11 +622,7 @@ try:
     mongodb_uri = os.environ.get('MONGODB_URI', '')
     if mongodb_uri:
         # Simple redaction that keeps the host but hides credentials
-        redacted_uri = mongodb_uri
-        if '@' in mongodb_uri:
-            # Format is typically mongodb://username:password@host:port/db
-            redacted_uri = 'mongodb://' + mongodb_uri.split('@', 1)[1]
-        logging.info(f"MONGODB_URI: {redacted_uri}")
+        logging.info(f"MONGODB_URI: {redact_uri(mongodb_uri)}")
     logging.info(f"SQLITE_DB_PATH: {os.environ.get('SQLITE_DB_PATH')}")
     logging.info(f"EMBEDDING_BASE_URL: {os.environ.get('EMBEDDING_BASE_URL')}")
     logging.info(f"EMBEDDING_MODEL: {os.environ.get('EMBEDDING_MODEL')}")
@@ -763,6 +763,7 @@ async def search_emails(
     """
     import time
     start_time = time.time()
+    limit = clamp(limit, 1, MAX_SEARCH_RESULTS)
 
     try:
         # Validate date formats if provided
@@ -1176,12 +1177,10 @@ async def export_email_data(
         format: Export format (csv, json, pdf, excel, html)
         date_from: Start date for export in ISO format (YYYY-MM-DD)
         date_to: End date for export in ISO format (YYYY-MM-DD)
-        output_path: Custom output file path (optional)
+        output_path: Optional file name only (no directories); exports are always written to the exports directory next to the SQLite database and never overwrite existing files
     """
     try:
         import os
-        import json
-        import csv
         from datetime import datetime
         
         # Validate date formats if provided
@@ -1217,70 +1216,23 @@ async def export_email_data(
                 error="No emails found for export"
             )
         
-        # Generate output filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if output_path:
-            file_path = output_path
-        else:
-            export_dir = os.path.join(os.path.dirname(processor.sqlite.db_path), "exports")
-            os.makedirs(export_dir, exist_ok=True)
-            file_path = os.path.join(export_dir, f"emails_export_{timestamp}.{format.value}")
-        
-        # Export based on format
-        if format == ExportFormat.JSON:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(emails, f, indent=2, ensure_ascii=False)
-        
-        elif format == ExportFormat.CSV:
-            if emails:
-                with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=emails[0].keys())
-                    writer.writeheader()
-                    writer.writerows(emails)
-        
-        elif format == ExportFormat.HTML:
-            html_content = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Email Export</title>
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; }
-                    .email { border: 1px solid #ccc; margin: 10px 0; padding: 15px; }
-                    .header { background-color: #f5f5f5; padding: 10px; margin-bottom: 10px; }
-                    .subject { font-weight: bold; font-size: 1.1em; }
-                    .meta { color: #666; font-size: 0.9em; }
-                </style>
-            </head>
-            <body>
-                <h1>Email Export Report</h1>
-            """
-            
-            # Note: SQLiteHandler returns capitalized field names (Subject, SenderEmailAddress, etc.)
-            for email in emails:
-                body = email.get('Body', '') or ''
-                html_content += f"""
-                <div class="email">
-                    <div class="header">
-                        <div class="subject">{email.get('Subject', 'No Subject')}</div>
-                        <div class="meta">From: {email.get('SenderEmailAddress', 'Unknown')} | Date: {email.get('ReceivedTime', 'Unknown')} | Folder: {email.get('Folder', 'Unknown')}</div>
-                    </div>
-                    <div class="body">{body[:500]}{'...' if len(body) > 500 else ''}</div>
-                </div>
-                """
-            
-            html_content += "</body></html>"
-            
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-        
-        else:
-            # For other formats, default to JSON
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(emails, f, indent=2, ensure_ascii=False)
-        
-        # Get file size
-        file_size = os.path.getsize(file_path)
+        # Exports are confined to <db dir>/exports; output_path may only name the file.
+        export_dir = os.path.join(
+            os.path.dirname(os.path.abspath(processor.sqlite.db_path)), "exports"
+        )
+        try:
+            file_path, file_size = write_email_export(
+                emails, format.value, export_dir, output_path
+            )
+        except (UnsafePathError, FileExistsError) as e:
+            return ExportResult(
+                success=False,
+                format=format,
+                file_path="",
+                records_exported=0,
+                file_size_bytes=0,
+                error=str(e)
+            )
         
         return ExportResult(
             success=True,
@@ -2142,5 +2094,12 @@ if __name__ == "__main__":
         mcp.settings.host = "127.0.0.1"
         mcp.settings.port = 8000
         mcp.settings.mount_path = "/mcp"
+        # Reject DNS-rebinding / cross-origin requests from web pages in the browser.
+        from mcp.server.transport_security import TransportSecuritySettings
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["127.0.0.1:8000", "localhost:8000"],
+            allowed_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+        )
         
     mcp.run(transport=transport)
