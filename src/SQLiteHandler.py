@@ -682,16 +682,17 @@ class SQLiteHandler:
                 base_where += " AND received_time <= ?"
                 params.append(date_to)
             
+            # base_where is built only from constant fragments; all values are bound via ?
             # Total emails
-            cursor.execute(f"SELECT COUNT(*) FROM emails {base_where}", params)
+            cursor.execute(f"SELECT COUNT(*) FROM emails {base_where}", params)  # nosec B608
             total_emails = cursor.fetchone()[0]
             
             # Emails by folder
-            cursor.execute(f"SELECT folder, COUNT(*) FROM emails {base_where} GROUP BY folder", params)
+            cursor.execute(f"SELECT folder, COUNT(*) FROM emails {base_where} GROUP BY folder", params)  # nosec B608
             emails_by_folder = dict(cursor.fetchall())
             
             # Emails by sender
-            cursor.execute(f"SELECT sender_email, COUNT(*) FROM emails {base_where} GROUP BY sender_email ORDER BY COUNT(*) DESC LIMIT 10", params)
+            cursor.execute(f"SELECT sender_email, COUNT(*) FROM emails {base_where} GROUP BY sender_email ORDER BY COUNT(*) DESC LIMIT 10", params)  # nosec B608
             emails_by_sender = dict(cursor.fetchall())
             
             # Daily volume (last 30 days if no date range specified)
@@ -704,12 +705,12 @@ class SQLiteHandler:
                 ORDER BY date
                 """)
             else:
-                cursor.execute(f"""
-                SELECT DATE(received_time) as date, COUNT(*) 
-                FROM emails {base_where}
-                GROUP BY DATE(received_time)
-                ORDER BY date
-                """, params)
+                daily_sql = (
+                    "SELECT DATE(received_time) as date, COUNT(*) FROM emails "
+                    + base_where  # nosec B608
+                    + " GROUP BY DATE(received_time) ORDER BY date"
+                )
+                cursor.execute(daily_sql, params)
             
             daily_volume = dict(cursor.fetchall())
             
@@ -762,6 +763,7 @@ class SQLiteHandler:
                 base_where += " AND received_time <= ?"
                 params.append(date_to)
             
+            # base_where is built only from constant fragments; all values are bound via ?
             query = f"""
             SELECT 
                 sender_email as email_address,
@@ -774,7 +776,7 @@ class SQLiteHandler:
             GROUP BY sender_email, sender_name
             HAVING COUNT(*) >= ?
             ORDER BY interaction_count DESC
-            """
+            """  # nosec B608
             
             params.append(min_interactions)
             cursor.execute(query, params)

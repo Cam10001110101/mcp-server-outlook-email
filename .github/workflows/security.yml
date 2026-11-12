@@ -1,0 +1,100 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '29 7 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.12.19'
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev --extra all
+
+      - name: Ruff (security modules and tests)
+        # The legacy modules predate ruff; lint the hardened code and tests.
+        run: uv run --locked ruff check src/security_utils.py src/exporters.py src/protocol_support.py tests .github/scripts
+
+      - name: Pytest
+        run: uv run --locked pytest -q
+
+      - name: Bandit (medium+ severity)
+        run: uv run --locked bandit -r src -ll
+
+      - name: Audit all locked runtime, build and development dependencies
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          mkdir -p /tmp/outlook-dependency-audit
+          uv export --locked --all-extras --no-emit-project --format pylock.toml --output-file /tmp/outlook-dependency-audit/pylock.toml
+          uv run --locked pip-audit --locked /tmp/outlook-dependency-audit --strict
+
+  llm-review:
+    name: LLM security review (advisory)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # Advisory only: never blocks merging. Runs only when the secret is set
+    # (secrets are not exposed to fork PRs under the pull_request trigger).
+    continue-on-error: true
+    env:
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_REVIEW_MODEL: ${{ vars.OLLAMA_REVIEW_MODEL || 'deepseek-v4.1-flash' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.OLLAMA_API_KEY != ''
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: env.OLLAMA_API_KEY != ''
+        with:
+          python-version: "3.12"
+
+      - name: Review PR diff
+        if: env.OLLAMA_API_KEY != ''
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python .github/scripts/llm_security_review.py --diff "$BASE_SHA...HEAD" > review.md
+          cat review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload review
+        if: env.OLLAMA_API_KEY != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: llm-security-review
+          path: review.md
+
+      - name: Skipped (no OLLAMA_API_KEY secret)
+        if: env.OLLAMA_API_KEY == ''
+        run: echo "Set the OLLAMA_API_KEY repository secret to enable the DeepSeek review." >> "$GITHUB_STEP_SUMMARY"

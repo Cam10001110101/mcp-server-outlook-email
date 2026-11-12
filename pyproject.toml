@@ -3,20 +3,20 @@ name = "mcp-server-outlook-email"
 version = "0.2.0"
 description = "Email Processing MCP Server with MongoDB integration - Cross-platform support"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 # Core dependencies (all platforms)
 dependencies = [
-    "python-dotenv",
-    "langchain",
-    "langchain_core",
-    "langchain-community",
-    "langchain-ollama",
-    "langchain-mongodb",
-    "pymongo",
-    "mcp[cli]",
-    "pydantic",
-    "pytz",
+    "langchain-ollama>=1.1.0,<2",
+    "langchain-core>=1.8.0,<2",
+    "pymongo>=4.10,<5",
+    "mcp>=2.3.0,<3",
+    "numpy>=2.2,<3",
+    "pydantic>=2.12,<3",
+    "pytz>=2026.1",
+    "requests>=2.32.5,<3",
+    "certifi>=2026.10.19",
+    "opentelemetry-api>=1.45.1,<2",
 ]
 
 [project.optional-dependencies]
@@ -40,13 +40,16 @@ all = [
 
 # Development dependencies
 dev = [
-    "pytest",
-    "pytest-asyncio",
-    "ruff",
+    "pytest>=9.2.0,<10",
+    "pytest-asyncio>=1.4.1.post1,<2",
+    "ruff>=0.17.4,<0.18",
+    "bandit>=1.9,<2",
+    "pip-audit>=2.10.1,<3",
+    "hatchling==1.33.0",
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -54,7 +57,7 @@ packages = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
@@ -62,4 +65,5 @@ ignore = ["E501"]  # Line too long - handled by formatter
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]

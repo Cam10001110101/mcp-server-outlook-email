@@ -23,6 +23,7 @@ from .mailbox_info import MailboxInfo
 # Import EmailMetadata from parent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from EmailMetadata import EmailMetadata
+from security_utils import is_trusted_graph_url, quote_path_segment
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class GraphAPIConnector(OutlookConnectorBase):
         """
         target_email = email or self.user_email
         if self._use_app_only_auth and target_email:
-            return f"/users/{target_email}"
+            return f"/users/{quote_path_segment(target_email)}"
         return "/me"
 
     @property
@@ -230,9 +231,10 @@ class GraphAPIConnector(OutlookConnectorBase):
                     if "user_code" in flow:
                         logger.info(f"To sign in, visit: {flow['verification_uri']}")
                         logger.info(f"Enter code: {flow['user_code']}")
-                        print(f"\n*** AUTHENTICATION REQUIRED ***")
-                        print(f"Visit: {flow['verification_uri']}")
-                        print(f"Enter code: {flow['user_code']}\n")
+                        # stderr, never stdout: stdout is the MCP JSON-RPC channel under STDIO.
+                        print("\n*** AUTHENTICATION REQUIRED ***", file=sys.stderr)
+                        print(f"Visit: {flow['verification_uri']}", file=sys.stderr)
+                        print(f"Enter code: {flow['user_code']}\n", file=sys.stderr)
                         result = app.acquire_token_by_device_flow(flow)
                     else:
                         raise RuntimeError(f"Device flow initiation failed: {flow.get('error')}")
@@ -347,6 +349,9 @@ class GraphAPIConnector(OutlookConnectorBase):
             while next_link and page_count < max_pages:
                 try:
                     if next_link.startswith("http"):
+                        if not is_trusted_graph_url(next_link):
+                            logger.error("Refusing to follow untrusted @odata.nextLink host")
+                            break
                         import requests
                         token = self._acquire_token()
                         response = requests.get(
@@ -393,7 +398,7 @@ class GraphAPIConnector(OutlookConnectorBase):
             User profile dict with displayName, mail, etc.
         """
         try:
-            result = self._make_request(f"/users/{email}")
+            result = self._make_request(f"/users/{quote_path_segment(email)}")
             return result
         except Exception as e:
             logger.warning(f"Could not get user info for {email}: {e}")
@@ -480,7 +485,7 @@ class GraphAPIConnector(OutlookConnectorBase):
             "Drafts": "drafts",
             "Archive": "archive",
         }
-        return folder_map.get(folder_name, folder_name.lower())
+        return folder_map.get(folder_name) or quote_path_segment(folder_name.lower())
 
     @staticmethod
     def clean_email_body(body: str) -> str:
@@ -594,6 +599,9 @@ class GraphAPIConnector(OutlookConnectorBase):
                         try:
                             if next_link.startswith("http"):
                                 # Full URL from @odata.nextLink
+                                if not is_trusted_graph_url(next_link):
+                                    logger.error("Refusing to follow untrusted @odata.nextLink host")
+                                    break
                                 import requests
                                 token = self._acquire_token()
                                 response = requests.get(
